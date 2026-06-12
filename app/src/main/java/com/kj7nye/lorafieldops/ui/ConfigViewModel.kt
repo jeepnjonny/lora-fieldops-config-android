@@ -26,9 +26,11 @@ import com.kj7nye.lorafieldops.serial.CommandResult
 import com.kj7nye.lorafieldops.serial.ConnectionEvent
 import com.kj7nye.lorafieldops.serial.ProtocolHandler
 import com.kj7nye.lorafieldops.serial.SerialManager
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 
@@ -68,6 +70,15 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     private val _snackMessage = MutableStateFlow<String?>(null)
     val snackMessage: StateFlow<String?> = _snackMessage.asStateFlow()
 
+    private val _logLines = MutableStateFlow<List<String>>(emptyList())
+    val logLines: StateFlow<List<String>> = _logLines.asStateFlow()
+
+    /** Currently selected log level; persists across log screen recompositions. */
+    val currentLogLevel = MutableStateFlow("info")
+
+    private var connectionEventJob: Job? = null
+    private var logCollectorJob: Job? = null
+
     // -------------------------------------------------------------------------
     // Connection lifecycle
     // -------------------------------------------------------------------------
@@ -82,7 +93,10 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         // viewModelScope uses Dispatchers.Main.immediate: this launch runs immediately
         // on the main thread and suspends at collect, returning control here before
         // open() is called below — so the subscriber is active when Opened fires.
-        viewModelScope.launch {
+        // Track as a Job so disconnect() can cancel it before the port close triggers
+        // a Lost event that would overwrite the Disconnected state we already set.
+        connectionEventJob?.cancel()
+        connectionEventJob = viewModelScope.launch {
             serialManager.connectionEvents.collect { event ->
                 when (event) {
                     is ConnectionEvent.Opened -> {
@@ -104,10 +118,39 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
+        // Tap rxFlow for the live log stream. Both this collector and ProtocolHandler's
+        // rxReader receive every byte since SharedFlow supports multiple subscribers.
+        logCollectorJob?.cancel()
+        logCollectorJob = viewModelScope.launch {
+            val lineBuf = StringBuilder()
+            serialManager.rxFlow.collect { bytes ->
+                lineBuf.append(bytes.toString(Charsets.UTF_8))
+                val raw = lineBuf.toString()
+                val lastNl = raw.lastIndexOf('\n')
+                if (lastNl >= 0) {
+                    val complete = raw.substring(0, lastNl + 1)
+                    lineBuf.clear()
+                    lineBuf.append(raw.substring(lastNl + 1))
+                    val newLines = complete.lines()
+                        .map { it.trimEnd('\r') }
+                        .filter { it.isNotEmpty() }
+                    if (newLines.isNotEmpty()) {
+                        _logLines.update { (it + newLines).takeLast(1000) }
+                    }
+                }
+            }
+        }
+
         serialManager.open(driver)
     }
 
     fun disconnect() {
+        // Cancel the event collector FIRST so the Lost event emitted when the port
+        // closes cannot overwrite the Disconnected state we're about to set.
+        connectionEventJob?.cancel()
+        connectionEventJob = null
+        logCollectorJob?.cancel()
+        logCollectorJob = null
         protocol?.close()
         protocol = null
         serialManager.close()
@@ -115,6 +158,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         _config.value = null
         _dirty.value = false
     }
+
+    fun clearLog() { _logLines.value = emptyList() }
 
     private suspend fun enterSetupAndLoad(proto: ProtocolHandler) {
         when (val r = proto.enterSetupMode()) {
@@ -234,6 +279,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setLogLevel(level: String) = viewModelScope.launch {
         protocol?.sendCommand("log $level")
+        currentLogLevel.value = level
     }
 
     // -------------------------------------------------------------------------

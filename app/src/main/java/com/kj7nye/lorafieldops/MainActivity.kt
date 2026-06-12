@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,12 +43,14 @@ import com.kj7nye.lorafieldops.ui.ConfigViewModel
 import com.kj7nye.lorafieldops.ui.ConnectionScreen
 import com.kj7nye.lorafieldops.ui.ConnectionState
 import com.kj7nye.lorafieldops.ui.ImportExportSheet
+import com.kj7nye.lorafieldops.ui.LogScreen
 import com.kj7nye.lorafieldops.ui.StatusScreen
 import com.kj7nye.lorafieldops.ui.theme.AppTheme
 
 private const val ROUTE_CONNECT = "connect"
 private const val ROUTE_CONFIG  = "config"
 private const val ROUTE_STATUS  = "status"
+private const val ROUTE_LOG     = "log"
 
 class MainActivity : ComponentActivity() {
 
@@ -138,6 +141,12 @@ private fun MainNavigation(vm: ConfigViewModel) {
                         label = { Text("Status") },
                     )
                     NavigationBarItem(
+                        selected = currentRoute == ROUTE_LOG,
+                        onClick = { navController.navigate(ROUTE_LOG) { launchSingleTop = true } },
+                        icon = { Icon(Icons.Default.List, null) },
+                        label = { Text("Log") },
+                    )
+                    NavigationBarItem(
                         selected = false,
                         onClick = { showImportExport = true },
                         icon = { Icon(Icons.Default.ImportExport, null) },
@@ -167,6 +176,7 @@ private fun MainNavigation(vm: ConfigViewModel) {
             }
             composable(ROUTE_CONFIG) { ConfigScreen(vm) }
             composable(ROUTE_STATUS) { StatusScreen(vm) }
+            composable(ROUTE_LOG)    { LogScreen(vm) }
         }
     }
 
