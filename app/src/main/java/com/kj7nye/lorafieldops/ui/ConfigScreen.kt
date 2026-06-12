@@ -289,7 +289,7 @@ fun ConfigScreen(vm: ConfigViewModel) {
             Section("Other") {
                 val o = c.other
                 LabeledTextField("Beacon path", o.beaconPath) { vm.setBeaconPath(it) }
-                IntField("Non-smart rate (sec)", o.nonSmartBeaconRate) { vm.setNonSmartRate(it) }
+                IntField("Non-smart rate (min)", o.nonSmartBeaconRate) { vm.setNonSmartRate(it) }
                 IntField("Comment after N beacons", o.sendCommentAfterXBeacons) {
                     vm.setSendCommentAfter(it)
                 }
@@ -332,7 +332,7 @@ private fun Card(color: androidx.compose.ui.graphics.Color, label: String) {
 
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {
-    var expanded by rememberSaveable { mutableStateOf(true) }
+    var expanded by rememberSaveable { mutableStateOf(false) }
     androidx.compose.material3.Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(
