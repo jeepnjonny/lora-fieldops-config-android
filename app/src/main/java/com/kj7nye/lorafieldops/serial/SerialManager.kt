@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
+import androidx.core.content.ContextCompat
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
@@ -73,8 +74,13 @@ class SerialManager(private val context: Context) {
                 onResult(granted)
             }
         }
-        context.registerReceiver(receiver, IntentFilter(ACTION_USB_PERMISSION),
-            Context.RECEIVER_NOT_EXPORTED)
+        // ContextCompat handles the RECEIVER_NOT_EXPORTED flag API level check internally;
+        // accessing Context.RECEIVER_NOT_EXPORTED directly crashes on API < 33 in Kotlin
+        // because the Kotlin compiler does not inline Java static final int fields.
+        ContextCompat.registerReceiver(
+            context, receiver, IntentFilter(ACTION_USB_PERMISSION),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         usbManager.requestPermission(device, pi)
     }
 
@@ -87,6 +93,11 @@ class SerialManager(private val context: Context) {
         val connection = usbManager.openDevice(driver.device)
         if (connection == null) {
             emitEvent(ConnectionEvent.Error("Failed to open USB connection — permission denied?"))
+            return
+        }
+        if (driver.ports.isEmpty()) {
+            connection.close()
+            emitEvent(ConnectionEvent.Error("USB driver reports no ports for this device"))
             return
         }
         val p = driver.ports[0]
