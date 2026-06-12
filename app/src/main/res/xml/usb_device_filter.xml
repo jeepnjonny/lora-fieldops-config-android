@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Match any CDC-ACM device (class 2, subclass 2) plus common UART bridge VIDs.
+    VID values are decimal: CH340=6790, CP210x=4292, FTDI=1027, Silicon Labs=4292.
+    This covers ESP32 native USB, nRF52840 native USB, CH340G/CH341 adapters, CP2102/CP2104.
+-->
+<resources>
+    <usb-device class="2" subclass="2" />
+    <usb-device vendor-id="6790" />
+    <usb-device vendor-id="4292" />
+    <usb-device vendor-id="1027" />
+</resources>

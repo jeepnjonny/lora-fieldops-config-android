@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LoRa FieldOps Config</string>
+    <string name="usb_permission_title">USB Access</string>
+    <string name="usb_permission_message">Allow access to the connected USB device?</string>
+</resources>
