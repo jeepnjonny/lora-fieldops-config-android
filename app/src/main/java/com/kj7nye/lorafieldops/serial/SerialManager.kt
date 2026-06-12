@@ -64,7 +64,10 @@ class SerialManager(private val context: Context) {
 
         val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
             PendingIntent.FLAG_MUTABLE else 0
-        val pi = PendingIntent.getBroadcast(context, 0, Intent(ACTION_USB_PERMISSION), flags)
+        val intent = Intent(ACTION_USB_PERMISSION).apply {
+            setPackage(context.packageName)
+        }
+        val pi = PendingIntent.getBroadcast(context, 0, intent, flags)
 
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
@@ -104,6 +107,11 @@ class SerialManager(private val context: Context) {
         try {
             p.open(connection)
             p.setParameters(BAUD_RATE, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
+            // TinyUSB CDC (nRF52840, ESP32-S3 native USB) checks tud_cdc_connected() before
+            // writing, which requires DTR asserted by the host. Without this, Serial.print()
+            // calls in the firmware are silently dropped and we never receive any response.
+            p.dtr = true
+            p.rts = true
         } catch (e: Exception) {
             emitEvent(ConnectionEvent.Error("Port open failed: ${e.message}"))
             return
