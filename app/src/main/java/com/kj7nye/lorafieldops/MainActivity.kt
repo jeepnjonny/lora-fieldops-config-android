@@ -3,6 +3,7 @@ package com.kj7nye.lorafieldops
 import android.content.Intent
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -106,11 +107,13 @@ private fun MainNavigation(vm: ConfigViewModel) {
         }
     }
 
-    // Navigate to connect screen on disconnect
+    // Navigate to connect screen on disconnect, clearing the entire back stack.
+    // popUpTo(ROUTE_CONNECT) would fail silently if ROUTE_CONNECT was already popped
+    // when navigating to config (it was). popUpTo(0) always clears everything.
     LaunchedEffect(connState) {
-        if (connState is ConnectionState.Disconnected && currentRoute != ROUTE_CONNECT) {
+        if (connState is ConnectionState.Disconnected) {
             navController.navigate(ROUTE_CONNECT) {
-                popUpTo(ROUTE_CONNECT) { inclusive = true }
+                popUpTo(0) { inclusive = true }
             }
         }
     }
