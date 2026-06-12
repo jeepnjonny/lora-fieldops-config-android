@@ -74,10 +74,14 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     fun connect(driver: UsbSerialDriver) {
         _connectionState.value = ConnectionState.Connecting
-        serialManager.open(driver)
+
         val proto = ProtocolHandler(serialManager, serialManager.rxFlow)
         protocol = proto
 
+        // Start collecting events BEFORE open() so the Opened event isn't dropped.
+        // viewModelScope uses Dispatchers.Main.immediate: this launch runs immediately
+        // on the main thread and suspends at collect, returning control here before
+        // open() is called below — so the subscriber is active when Opened fires.
         viewModelScope.launch {
             serialManager.connectionEvents.collect { event ->
                 when (event) {
@@ -99,6 +103,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+
+        serialManager.open(driver)
     }
 
     fun disconnect() {
@@ -456,9 +462,9 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     private fun snack(msg: String) { _snackMessage.value = msg }
 
     /** Applies [localUpdate] immediately to _config, then sends [cmd] in background. */
-    private fun sendField(cmd: String, localUpdate: TrackerConfig.() -> TrackerConfig) =
+    private fun sendField(cmd: String, localUpdate: TrackerConfig.() -> Unit) =
         viewModelScope.launch {
-            _config.value = _config.value?.localUpdate() ?: return@launch
+            _config.value?.localUpdate() ?: return@launch
             _dirty.value = true
             val result = protocol?.sendCommand(cmd)
             if (result is CommandResult.Err && result.message.startsWith("ERR:")) {

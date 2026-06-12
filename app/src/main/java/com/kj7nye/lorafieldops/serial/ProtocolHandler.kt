@@ -80,8 +80,8 @@ class ProtocolHandler(
      * as soon as the banner/prompt arrives — no polling, no thread-visibility race.
      */
     suspend fun enterSetupMode(): CommandResult {
+        // ProtocolHandler is freshly created per connection, so accum is always empty here.
         val deferred = CompletableDeferred<CommandResult>()
-        accum.clear()
         entryDeferred = deferred
 
         return try {
