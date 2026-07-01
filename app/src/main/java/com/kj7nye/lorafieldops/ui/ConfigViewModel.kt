@@ -17,6 +17,7 @@ import com.kj7nye.lorafieldops.model.FixedPositionConfig
 import com.kj7nye.lorafieldops.model.GpsSource
 import com.kj7nye.lorafieldops.model.LoraConfig
 import com.kj7nye.lorafieldops.model.OtherConfig
+import com.kj7nye.lorafieldops.model.PhgConfig
 import com.kj7nye.lorafieldops.model.PttTriggerConfig
 import com.kj7nye.lorafieldops.model.TcpKissConfig
 import com.kj7nye.lorafieldops.model.TrackerConfig
@@ -282,6 +283,50 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         currentLogLevel.value = level
     }
 
+    /** Fires an out-of-cycle comment beacon; does not affect the normal beacon timer. */
+    fun txCommentNow() = viewModelScope.launch {
+        when (val r = protocol?.sendCommand("tx comment")) {
+            is CommandResult.Ok ->
+                if (r.text.startsWith("ERR")) snack("TX failed: ${r.text}") else snack("Comment beacon sent")
+            is CommandResult.Err -> snack("TX failed: ${r.message}")
+            CommandResult.Timeout -> snack("TX timed out")
+            null -> snack("Not connected")
+        }
+    }
+
+    /** Fires an out-of-cycle status beacon; does not affect the normal beacon timer. */
+    fun txStatusNow() = viewModelScope.launch {
+        when (val r = protocol?.sendCommand("tx status")) {
+            is CommandResult.Ok ->
+                if (r.text.startsWith("ERR")) snack("TX failed: ${r.text}") else snack("Status beacon sent")
+            is CommandResult.Err -> snack("TX failed: ${r.message}")
+            CommandResult.Timeout -> snack("TX timed out")
+            null -> snack("Not connected")
+        }
+    }
+
+    /**
+     * Resets an nRF52 tracker into the Nordic OTA DFU bootloader. ESP32 boards don't
+     * build this command in, so the firmware replies "unknown command" there instead
+     * of rebooting — checked explicitly so we don't disconnect a device that never left.
+     * On success the device drops off USB serial once it enters DFU mode, so we
+     * disconnect right after — reflashing continues via the nRF Connect app.
+     */
+    fun triggerOtaDfu() = viewModelScope.launch {
+        when (val r = protocol?.sendCommand("otadfu")) {
+            is CommandResult.Ok ->
+                if (r.text.contains("unknown command")) {
+                    snack("OTA DFU is only available on nRF52 boards")
+                } else {
+                    snack("Entering OTA DFU mode — use nRF Connect to upload firmware")
+                    disconnect()
+                }
+            is CommandResult.Err -> snack("OTA DFU failed: ${r.message}")
+            CommandResult.Timeout -> snack("OTA DFU timed out")
+            null -> snack("Not connected")
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Per-field command senders
     // Each mutates the local config state immediately for snappy UI, then sends
@@ -417,6 +462,27 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         updatePtt { copy(postDelay = v) }
     }
 
+    // -- PHG (Power-Height-Gain-Directivity beacon) --
+
+    fun setPhgEnabled(v: Boolean) = sendField("phg ${v.onOff}") {
+        updatePhg { copy(enabled = v) }
+    }
+    fun setPhgPower(v: Int) = sendField("phg power $v") {
+        updatePhg { copy(power = v) }
+    }
+    fun setPhgHeight(v: Int) = sendField("phg height $v") {
+        updatePhg { copy(height = v) }
+    }
+    fun setPhgGain(v: Int) = sendField("phg gain $v") {
+        updatePhg { copy(gain = v) }
+    }
+    fun setPhgDirectivity(v: Int) = sendField("phg dir $v") {
+        updatePhg { copy(directivity = v) }
+    }
+    fun setPhgRate(v: Int) = sendField("phg rate $v") {
+        updatePhg { copy(beaconRate = v) }
+    }
+
     // -- WiFi AP --
 
     fun setWifiApPassword(v: String) = sendField("wifi password $v") {
@@ -533,6 +599,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         update { copy(battery = battery.fn()) }
     private fun updatePtt(fn: PttTriggerConfig.() -> PttTriggerConfig) =
         update { copy(pttTrigger = pttTrigger.fn()) }
+    private fun updatePhg(fn: PhgConfig.() -> PhgConfig) =
+        update { copy(phg = phg.fn()) }
     private fun updateWifiSta(fn: WifiSTAConfig.() -> WifiSTAConfig) =
         update { copy(wifiSTA = wifiSTA.fn()) }
     private fun updateAprsIs(fn: AprsIsConfig.() -> AprsIsConfig) =
