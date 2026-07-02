@@ -46,6 +46,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.kj7nye.lorafieldops.model.SMARTBEACON_LABELS
+import com.kj7nye.lorafieldops.model.BEACON_PATH_OPTIONS
 import com.kj7nye.lorafieldops.model.DeviceRole
 import com.kj7nye.lorafieldops.model.DigiMode
 import com.kj7nye.lorafieldops.model.GpsSource
@@ -228,6 +229,24 @@ fun ConfigScreen(vm: ConfigViewModel) {
                 IntField("Post-delay (ms)", p.postDelay) { vm.setPttPostDelay(it) }
             }
 
+            Section("PHG (Station Power-Height-Gain)") {
+                val p = c.phg
+                SwitchRow("PHG beacon active", p.enabled) { vm.setPhgEnabled(it) }
+                LabeledSlider("Power code", p.power.toFloat(), 0f, 9f, steps = 8) {
+                    vm.setPhgPower(it.toInt())
+                }
+                LabeledSlider("Height code", p.height.toFloat(), 0f, 9f, steps = 8) {
+                    vm.setPhgHeight(it.toInt())
+                }
+                LabeledSlider("Gain code", p.gain.toFloat(), 0f, 9f, steps = 8) {
+                    vm.setPhgGain(it.toInt())
+                }
+                LabeledSlider("Directivity code", p.directivity.toFloat(), 0f, 9f, steps = 8) {
+                    vm.setPhgDirectivity(it.toInt())
+                }
+                IntField("Beacon interval (min)", p.beaconRate) { vm.setPhgRate(it) }
+            }
+
             Section("WiFi AP") {
                 PasswordField("AP password", c.wifiAP.password) { vm.setWifiApPassword(it) }
             }
@@ -288,7 +307,12 @@ fun ConfigScreen(vm: ConfigViewModel) {
 
             Section("Other") {
                 val o = c.other
-                LabeledTextField("Beacon path", o.beaconPath) { vm.setBeaconPath(it) }
+                DropdownField(
+                    label = "Beacon path",
+                    options = BEACON_PATH_OPTIONS,
+                    // Legacy configs stored "" for no-repeat; normalize to the explicit DIRECT option.
+                    selected = o.beaconPath.ifEmpty { "DIRECT" },
+                ) { vm.setBeaconPath(it) }
                 IntField("Non-smart rate (min)", o.nonSmartBeaconRate) { vm.setNonSmartRate(it) }
                 IntField("Comment after N beacons", o.sendCommentAfterXBeacons) {
                     vm.setSendCommentAfter(it)

@@ -26,6 +26,7 @@ data class TrackerConfig(
     val customSmartBeacon: CustomSmartBeaconConfig = CustomSmartBeaconConfig(),
     @SerialName("pttTrigger")
     val pttTrigger: PttTriggerConfig = PttTriggerConfig(),
+    val phg: PhgConfig = PhgConfig(),
 )
 
 @Serializable
@@ -136,6 +137,17 @@ data class PttTriggerConfig(
     val reverse: Boolean = false,
 )
 
+/** APRS PHG (Power-Height-Gain-Directivity) station capability beacon. */
+@Serializable
+data class PhgConfig(
+    val enabled: Boolean = false,
+    val power: Int = 7,
+    val height: Int = 2,
+    val gain: Int = 3,
+    val directivity: Int = 0,
+    val beaconRate: Int = 10,
+)
+
 // ---------------------------------------------------------------------------
 // Enum helpers — kept as constants for command building; not part of JSON model
 // ---------------------------------------------------------------------------
@@ -199,3 +211,11 @@ object DigiMode {
 
 /** SmartBeacon preset labels — index matches beacon.smartBeaconSetting */
 val SMARTBEACON_LABELS = listOf("Runner", "Bike", "Car", "Jetboat", "Custom")
+
+/** Firmware-documented beacon TX path presets (matches the web-config's `beaconpath` options). */
+val BEACON_PATH_OPTIONS = listOf(
+    "DIRECT" to "DIRECT (no repeat, iGate/digi)",
+    "WIDE1-1" to "WIDE1-1 (1 hop)",
+    "WIDE1-1,WIDE2-1" to "WIDE1-1,WIDE2-1 (2 hops)",
+    "WIDE1-1,WIDE2-2" to "WIDE1-1,WIDE2-2 (3 hops)",
+)
