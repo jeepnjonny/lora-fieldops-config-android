@@ -80,6 +80,16 @@ fun StatusScreen(vm: ConfigViewModel) {
             onRefresh = { vm.readAprsIsStatus() },
         )
 
+        // WiFi STA
+        StatusCard(
+            icon = { Icon(Icons.Default.Wifi, null) },
+            title = "WiFi STA",
+            body = listOf(
+                "Connected" to (statusLines["wifiSTA.connected"] ?: "—"),
+            ),
+            onRefresh = { vm.readWifiStaStatus() },
+        )
+
         // Firmware version
         Card(modifier = Modifier.fillMaxWidth()) {
             Row(

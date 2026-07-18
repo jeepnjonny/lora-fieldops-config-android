@@ -9,6 +9,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import androidx.core.content.ContextCompat
+import com.hoho.android.usbserial.driver.CdcAcmSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
@@ -107,11 +108,21 @@ class SerialManager(private val context: Context) {
         try {
             p.open(connection)
             p.setParameters(BAUD_RATE, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
-            // TinyUSB CDC (nRF52840, ESP32-S3 native USB) checks tud_cdc_connected() before
-            // writing, which requires DTR asserted by the host. Without this, Serial.print()
-            // calls in the firmware are silently dropped and we never receive any response.
-            p.dtr = true
-            p.rts = true
+            if (driver is CdcAcmSerialDriver) {
+                // TinyUSB CDC (nRF52840, ESP32-S3 native USB) checks tud_cdc_connected() before
+                // writing, which requires DTR asserted by the host. Without this, Serial.print()
+                // calls in the firmware are silently dropped and we never receive any response.
+                p.dtr = true
+                p.rts = true
+            } else {
+                // UART-bridge boards (CP210x/CH340/FTDI) — including the Heltec V3.2's
+                // CP2102N — wire RTS to EN and DTR to GPIO0 for esptool's auto-reset/
+                // bootloader-entry circuit. Asserting both here reproduces that entry
+                // sequence and drops the board into download mode instead of a normal
+                // serial console, so leave them deasserted on these boards.
+                p.dtr = false
+                p.rts = false
+            }
         } catch (e: Exception) {
             emitEvent(ConnectionEvent.Error("Port open failed: ${e.message}"))
             return
