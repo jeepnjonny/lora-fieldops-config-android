@@ -17,6 +17,24 @@ android {
         versionName = "1.0.0"
     }
 
+    // Only configured when RELEASE_KEYSTORE_PATH points at a real file (set by the
+    // release workflow after decoding the RELEASE_KEYSTORE_BASE64 secret). Local
+    // `assembleRelease` runs with none of these set, so it stays unsigned exactly
+    // as before — this only takes effect in CI.
+    val releaseKeystorePath = System.getenv("RELEASE_KEYSTORE_PATH")
+    val releaseKeystoreFile = releaseKeystorePath?.let { file(it) }?.takeIf { it.exists() }
+
+    signingConfigs {
+        if (releaseKeystoreFile != null) {
+            create("release") {
+                storeFile = releaseKeystoreFile
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -24,6 +42,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (releaseKeystoreFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {
