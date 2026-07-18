@@ -103,6 +103,7 @@ data class AprsIsConfig(
     val port: Int = 14580,
     val passcode: String = "",
     val filter: String = "m/20",
+    val downlinkEnabled: Boolean = true,
 )
 
 @Serializable

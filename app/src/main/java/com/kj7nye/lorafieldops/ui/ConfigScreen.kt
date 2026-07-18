@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -26,6 +27,7 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -50,6 +52,24 @@ import com.kj7nye.lorafieldops.model.BEACON_PATH_OPTIONS
 import com.kj7nye.lorafieldops.model.DeviceRole
 import com.kj7nye.lorafieldops.model.DigiMode
 import com.kj7nye.lorafieldops.model.GpsSource
+
+// Board-agnostic curated set: 20 dBm is the safe ceiling on every supported
+// board — bare SX1262 boards (T114, V3.2) clamp to +22 dBm chip output
+// regardless of setting >=20, and HAS_1W_LORA boards (T-Beam 1W, LoRanger V1)
+// are firmware-clamped to 20 dBm chip drive into their external 30 dBm PA
+// (see lora_utils.cpp applyOutputPower()).
+private val TX_POWER_OPTIONS = listOf(6, 12, 18, 20)
+
+// Actual RF output per setting, by board family. Only the 20 dBm row for
+// HAS_1W_LORA boards is a verified datasheet figure; the rest of that column
+// is approximate (assumes a roughly fixed PA gain across its drive range).
+private data class TxPowerRow(val setting: Int, val chipOnly: String, val oneWatt: String)
+private val TX_POWER_TABLE = listOf(
+    TxPowerRow(6, "8 dBm (~6 mW)", "~16 dBm (~40 mW), approx."),
+    TxPowerRow(12, "14 dBm (~25 mW)", "~22 dBm (~158 mW), approx."),
+    TxPowerRow(18, "20 dBm (~100 mW)", "~28 dBm (~631 mW), approx."),
+    TxPowerRow(20, "22 dBm (~158 mW)", "30 dBm (1 W) — datasheet-validated max"),
+)
 
 private val LORA_BW_OPTIONS = listOf(
     7800L to "7.8 kHz", 10400L to "10.4 kHz", 15600L to "15.6 kHz",
@@ -192,8 +212,28 @@ fun ConfigScreen(vm: ConfigViewModel) {
                 LabeledSlider("Coding Rate (4/x)", l.codingRate4.toFloat(), 5f, 8f, steps = 2) {
                     vm.setLoraCr(it.toInt())
                 }
-                LabeledSlider("TX Power (dBm)", l.power.toFloat(), 0f, 22f, steps = 21) {
-                    vm.setLoraPower(it.toInt())
+                DropdownField("TX Power (dBm)", TX_POWER_OPTIONS.map { it to "$it dBm" }, l.power) {
+                    vm.setLoraPower(it)
+                }
+                Text(
+                    "Actual RF output depends on your board — only 20 dBm on 1 W boards " +
+                        "(T-Beam 1W, LoRanger V1) is a verified datasheet figure; other " +
+                        "1 W-board values are approximate.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                    Row(Modifier.fillMaxWidth()) {
+                        Text("Setting", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+                        Text("T114 / V3.2", Modifier.weight(2f), style = MaterialTheme.typography.labelSmall)
+                        Text("1 W boards", Modifier.weight(2f), style = MaterialTheme.typography.labelSmall)
+                    }
+                    TX_POWER_TABLE.forEach { row ->
+                        Row(Modifier.fillMaxWidth()) {
+                            Text("${row.setting} dBm", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            Text(row.chipOnly, Modifier.weight(2f), style = MaterialTheme.typography.bodySmall)
+                            Text(row.oneWatt, Modifier.weight(2f), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
 
@@ -256,6 +296,28 @@ fun ConfigScreen(vm: ConfigViewModel) {
                 SwitchRow("Enable WiFi STA", w.enabled) { vm.setWifiStaEnabled(it) }
                 LabeledTextField("SSID", w.ssid) { vm.setWifiStaSsid(it) }
                 PasswordField("Password", w.password) { vm.setWifiStaPassword(it) }
+
+                val scanning by vm.wifiScanning.collectAsState()
+                val scanResults by vm.wifiScanResults.collectAsState()
+                OutlinedButton(onClick = { vm.scanWifiNetworks() }, enabled = !scanning) {
+                    Text(if (scanning) "Scanning… (blocks the device a few seconds)" else "Scan for networks")
+                }
+                if (scanResults.isNotEmpty()) {
+                    HorizontalDivider()
+                    Text("Nearby networks — tap to fill in SSID", style = MaterialTheme.typography.labelMedium)
+                    scanResults.sortedByDescending { it.rssi }.forEach { net ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { vm.setWifiStaSsid(net.ssid) },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(if (net.secure) "🔒 ${net.ssid}" else net.ssid)
+                            Text("${net.rssi} dBm", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
             }
 
             Section("APRS-IS") {
@@ -264,6 +326,12 @@ fun ConfigScreen(vm: ConfigViewModel) {
                 IntField("Port", a.port) { vm.setAprsIsPort(it) }
                 LabeledTextField("Passcode", a.passcode) { vm.setAprsIsPasscode(it) }
                 LabeledTextField("Filter", a.filter) { vm.setAprsIsFilter(it) }
+                SwitchRow("Downlink to RF", a.downlinkEnabled) { vm.setAprsIsDownlink(it) }
+                Text(
+                    "Gates directed messages from APRS-IS back to RF, but only to a " +
+                        "station heard directly on RF in the last 30 minutes.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
 
             Section("TCP KISS") {

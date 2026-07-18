@@ -48,6 +48,9 @@ sealed class ConnectionState {
 /** Per-field command result for inline error display */
 data class FieldError(val field: String, val message: String)
 
+/** One AP found by `wifista scan`. */
+data class WifiScanResult(val ssid: String, val rssi: Int, val secure: Boolean)
+
 class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     val serialManager = SerialManager(app)
@@ -73,6 +76,12 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _logLines = MutableStateFlow<List<String>>(emptyList())
     val logLines: StateFlow<List<String>> = _logLines.asStateFlow()
+
+    private val _wifiScanResults = MutableStateFlow<List<WifiScanResult>>(emptyList())
+    val wifiScanResults: StateFlow<List<WifiScanResult>> = _wifiScanResults.asStateFlow()
+
+    private val _wifiScanning = MutableStateFlow(false)
+    val wifiScanning: StateFlow<Boolean> = _wifiScanning.asStateFlow()
 
     /** Currently selected log level; persists across log screen recompositions. */
     val currentLogLevel = MutableStateFlow("info")
@@ -267,6 +276,39 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
             lines["aprsIS.connected"] = if (r.text.contains("true")) "true" else "false"
             _statusLines.value = lines
         }
+    }
+
+    fun readWifiStaStatus() = viewModelScope.launch {
+        val r = protocol?.sendCommand("wifista status") ?: return@launch
+        if (r is CommandResult.Ok) {
+            val lines = _statusLines.value.toMutableMap()
+            lines["wifiSTA.connected"] = if (r.text.contains("true")) "true" else "false"
+            _statusLines.value = lines
+        }
+    }
+
+    /**
+     * Runs the firmware's blocking 2-4s WiFi scan and parses the
+     * `wifiSTA.scan: rssi=X secure=0|1 ssid=Y` lines it prints.
+     */
+    fun scanWifiNetworks() = viewModelScope.launch {
+        _wifiScanning.value = true
+        val r = protocol?.sendCommand("wifista scan")
+        when (r) {
+            is CommandResult.Ok -> _wifiScanResults.value = r.text.lines()
+                .filter { it.startsWith("wifiSTA.scan:") }
+                .mapNotNull { line ->
+                    val rssi = Regex("rssi=(-?\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
+                    val secure = Regex("secure=(\\d)").find(line)?.groupValues?.get(1) == "1"
+                    // ssid= is last on the line and unbounded so SSIDs containing spaces aren't truncated.
+                    val ssid = Regex("ssid=(.*)$").find(line)?.groupValues?.get(1)
+                    if (rssi != null && ssid != null) WifiScanResult(ssid, rssi, secure) else null
+                }
+            is CommandResult.Err -> snack("WiFi scan failed: ${r.message}")
+            CommandResult.Timeout -> snack("WiFi scan timed out")
+            null -> snack("Not connected")
+        }
+        _wifiScanning.value = false
     }
 
     fun readFirmwareVersion() = viewModelScope.launch {
@@ -514,6 +556,9 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun setAprsIsFilter(v: String) = sendField("aprsiss filter $v") {
         updateAprsIs { copy(filter = v) }
+    }
+    fun setAprsIsDownlink(v: Boolean) = sendField("aprsiss downlink ${v.onOff}") {
+        updateAprsIs { copy(downlinkEnabled = v) }
     }
 
     // -- TCP KISS --
