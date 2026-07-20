@@ -91,10 +91,15 @@ data class WifiAPConfig(
 )
 
 @Serializable
-data class WifiSTAConfig(
-    val enabled: Boolean = false,
+data class WifiNetworkConfig(
     val ssid: String = "",
     val password: String = "",
+)
+
+@Serializable
+data class WifiSTAConfig(
+    val enabled: Boolean = false,
+    val networks: List<WifiNetworkConfig> = emptyList(),
 )
 
 @Serializable

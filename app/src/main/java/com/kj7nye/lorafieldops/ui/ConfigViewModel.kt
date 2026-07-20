@@ -22,6 +22,7 @@ import com.kj7nye.lorafieldops.model.PttTriggerConfig
 import com.kj7nye.lorafieldops.model.TcpKissConfig
 import com.kj7nye.lorafieldops.model.TrackerConfig
 import com.kj7nye.lorafieldops.model.WifiAPConfig
+import com.kj7nye.lorafieldops.model.WifiNetworkConfig
 import com.kj7nye.lorafieldops.model.WifiSTAConfig
 import com.kj7nye.lorafieldops.serial.CommandResult
 import com.kj7nye.lorafieldops.serial.ConnectionEvent
@@ -536,11 +537,22 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setWifiStaEnabled(v: Boolean) = sendField("wifista ${v.onOff}") {
         updateWifiSta { copy(enabled = v) }
     }
-    fun setWifiStaSsid(v: String) = sendField("wifista ssid $v") {
-        updateWifiSta { copy(ssid = v) }
+    // Firmware rejects a blank `wifista add` SSID, so an empty tap (the "+ Add
+    // network" button) falls back to a placeholder the user then edits in place.
+    fun addWifiStaNetwork(ssid: String) {
+        val effectiveSsid = ssid.ifBlank { "NEW-NETWORK" }
+        sendField("wifista add $effectiveSsid") {
+            updateWifiSta { copy(networks = networks + WifiNetworkConfig(ssid = effectiveSsid)) }
+        }
     }
-    fun setWifiStaPassword(v: String) = sendField("wifista password $v") {
-        updateWifiSta { copy(password = v) }
+    fun removeWifiStaNetwork(i: Int) = sendField("wifista remove $i") {
+        updateWifiSta { copy(networks = networks.filterIndexed { idx, _ -> idx != i }) }
+    }
+    fun setWifiStaSsid(i: Int, v: String) = sendField("wifista ssid $i $v") {
+        updateWifiSta { copy(networks = networks.mapIndexed { idx, n -> if (idx == i) n.copy(ssid = v) else n }) }
+    }
+    fun setWifiStaPassword(i: Int, v: String) = sendField("wifista password $i $v") {
+        updateWifiSta { copy(networks = networks.mapIndexed { idx, n -> if (idx == i) n.copy(password = v) else n }) }
     }
 
     // -- APRS-IS --
