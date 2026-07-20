@@ -28,13 +28,36 @@ jobs:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
         run: echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
 
+      # Android requires versionCode to strictly increase for an install to be treated
+      # as an upgrade rather than a conflicting/rejected install, so it can't stay
+      # hardcoded. Requires a plain vMAJOR.MINOR.PATCH release tag — fails loudly rather
+      # than silently falling back to a stale versionCode for anything else (e.g. a
+      # -rc1/-test suffix).
+      - name: Derive app version from the release tag
+        if: github.event_name == 'release'
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          if [[ "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major="${BASH_REMATCH[1]}"; minor="${BASH_REMATCH[2]}"; patch="${BASH_REMATCH[3]}"
+            echo "APP_VERSION_CODE=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_ENV"
+            echo "APP_VERSION_NAME=${major}.${minor}.${patch}" >> "$GITHUB_ENV"
+          else
+            echo "::error::Release tag '$tag' is not a plain vMAJOR.MINOR.PATCH — refusing to guess a versionCode." >&2
+            exit 1
+          fi
+
       - name: Build release APK
         env:
           RELEASE_KEYSTORE_PATH: ${{ runner.temp }}/release.keystore
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease
+        run: |
+          if [[ -n "$APP_VERSION_CODE" ]]; then
+            ./gradlew assembleRelease -PreleaseVersionCode="$APP_VERSION_CODE" -PreleaseVersionName="$APP_VERSION_NAME"
+          else
+            ./gradlew assembleRelease
+          fi
 
       - name: Upload APK to the release
         if: github.event_name == 'release'
