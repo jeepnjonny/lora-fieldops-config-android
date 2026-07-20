@@ -11,7 +11,7 @@ android {
     defaultConfig {
         applicationId = "com.kj7nye.lorafieldops"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0.0"
     }
