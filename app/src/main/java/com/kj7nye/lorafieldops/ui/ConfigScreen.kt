@@ -294,8 +294,21 @@ fun ConfigScreen(vm: ConfigViewModel) {
             Section("WiFi STA") {
                 val w = c.wifiSTA
                 SwitchRow("Enable WiFi STA", w.enabled) { vm.setWifiStaEnabled(it) }
-                LabeledTextField("SSID", w.ssid) { vm.setWifiStaSsid(it) }
-                PasswordField("Password", w.password) { vm.setWifiStaPassword(it) }
+                Text(
+                    "Up to 5 networks, tried in order top to bottom. Stays connected until the link drops.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
+                w.networks.forEachIndexed { i, net ->
+                    HorizontalDivider()
+                    LabeledTextField("SSID ${i + 1}", net.ssid) { vm.setWifiStaSsid(i, it) }
+                    PasswordField("Password ${i + 1}", net.password) { vm.setWifiStaPassword(i, it) }
+                    TextButton(onClick = { vm.removeWifiStaNetwork(i) }) { Text("Delete network ${i + 1}") }
+                }
+
+                if (w.networks.size < 5) {
+                    OutlinedButton(onClick = { vm.addWifiStaNetwork("") }) { Text("+ Add network") }
+                }
 
                 val scanning by vm.wifiScanning.collectAsState()
                 val scanResults by vm.wifiScanResults.collectAsState()
@@ -304,12 +317,12 @@ fun ConfigScreen(vm: ConfigViewModel) {
                 }
                 if (scanResults.isNotEmpty()) {
                     HorizontalDivider()
-                    Text("Nearby networks — tap to fill in SSID", style = MaterialTheme.typography.labelMedium)
+                    Text("Nearby networks — tap to add", style = MaterialTheme.typography.labelMedium)
                     scanResults.sortedByDescending { it.rssi }.forEach { net ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { vm.setWifiStaSsid(net.ssid) },
+                                .clickable(enabled = w.networks.size < 5) { vm.addWifiStaNetwork(net.ssid) },
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
