@@ -12,8 +12,11 @@ android {
         applicationId = "com.kj7nye.lorafieldops"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        // Overridden by the release workflow via -PreleaseVersionCode/-PreleaseVersionName,
+        // derived from the release tag so each release actually installs as an upgrade
+        // over the last one. Local builds fall back to these defaults.
+        versionCode = (findProperty("releaseVersionCode") as String?)?.toInt() ?: 1
+        versionName = (findProperty("releaseVersionName") as String?) ?: "1.0.0"
     }
 
     // Only configured when RELEASE_KEYSTORE_PATH points at a real file (set by the
