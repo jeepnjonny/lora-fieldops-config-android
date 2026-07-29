@@ -175,8 +175,13 @@ class ProtocolHandler(
             else if (accum.contains("[LOG]"))        mode = SerialMode.LOG
 
             // --- Mode-entry completion (enterSetupMode) ---
+            // Wait for the trailing PROMPT specifically, not just the banner: the banner
+            // and its prompt can arrive in separate USB reads, and completing on the banner
+            // alone leaves the real "\n> " to land in a freshly-cleared accum with nothing
+            // listening for it — it then leaks into and prematurely terminates the very
+            // next command (almost always the post-connect `export`).
             val ed = entryDeferred
-            if (ed != null && (accum.contains(BANNER_SETUP) || accum.contains(PROMPT))) {
+            if (ed != null && accum.contains(PROMPT)) {
                 entryDeferred = null
                 ed.complete(CommandResult.Ok(accum.toString()))
                 accum.clear()
