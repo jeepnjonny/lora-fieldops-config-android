@@ -168,7 +168,8 @@ private fun ImportTab(vm: ConfigViewModel, onSuccess: () -> Unit) {
             Text(
                 statusText,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (statusText.contains("failed") || statusText.contains("timed"))
+                color = if (statusText.contains("failed") || statusText.contains("timed") ||
+                        statusText.contains("Invalid"))
                     MaterialTheme.colorScheme.error
                 else
                     MaterialTheme.colorScheme.primary,

@@ -8,7 +8,6 @@ composeBom = "2026.06.00"
 navigationCompose = "2.9.8"
 serialization = "1.11.0"
 usbSerial = "3.10.0"
-datastorePrefs = "1.2.1"
 coroutines = "1.11.0"
 
 [libraries]
@@ -25,7 +24,6 @@ androidx-material-icons-extended = { group = "androidx.compose.material", name =
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 usb-serial-android = { group = "com.github.mik3y", name = "usb-serial-for-android", version.ref = "usbSerial" }
-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastorePrefs" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 
