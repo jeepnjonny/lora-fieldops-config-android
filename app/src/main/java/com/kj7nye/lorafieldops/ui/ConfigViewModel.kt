@@ -1,7 +1,13 @@
 package com.kj7nye.lorafieldops.ui
 
+import android.annotation.SuppressLint
 import android.app.Application
+import android.content.Context
 import android.hardware.usb.UsbDevice
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Looper
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.hoho.android.usbserial.driver.UsbSerialDriver
@@ -28,16 +34,23 @@ import com.kj7nye.lorafieldops.serial.CommandResult
 import com.kj7nye.lorafieldops.serial.ConnectionEvent
 import com.kj7nye.lorafieldops.serial.ProtocolHandler
 import com.kj7nye.lorafieldops.serial.SerialManager
+import com.kj7nye.lorafieldops.serial.WIFI_SCAN_TIMEOUT_MS
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlin.math.roundToInt
 
 // JSON parser — lenient to handle any extra fields from future firmware versions
 private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+// Typed fields (free text / numbers) wait this long after the last keystroke before
+// actually sending — otherwise "KG7KMV-9" fires 8 separate serial round-trips, one
+// per character, each serialized through the command queue.
+private const val FIELD_DEBOUNCE_MS = 500L
 
 sealed class ConnectionState {
     object Disconnected : ConnectionState()
@@ -84,11 +97,24 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     private val _wifiScanning = MutableStateFlow(false)
     val wifiScanning: StateFlow<Boolean> = _wifiScanning.asStateFlow()
 
+    private val _locationFetching = MutableStateFlow(false)
+    val locationFetching: StateFlow<Boolean> = _locationFetching.asStateFlow()
+
     /** Currently selected log level; persists across log screen recompositions. */
     val currentLogLevel = MutableStateFlow("info")
 
+    // Backing store for _logLines — evicts from the front instead of rebuilding
+    // a full `it + newLines` list (up to 1000+ elements) on every chunk.
+    private val logBuffer = ArrayDeque<String>(1000)
+
     private var connectionEventJob: Job? = null
     private var logCollectorJob: Job? = null
+    private var locationListener: LocationListener? = null
+    private var locationTimeoutJob: Job? = null
+
+    // Pending debounced sends, keyed by field (e.g. "beacon callsign") — a fresh edit
+    // to the same field cancels and restarts the timer instead of queuing another send.
+    private val fieldDebounceJobs = mutableMapOf<String, Job>()
 
     // -------------------------------------------------------------------------
     // Connection lifecycle
@@ -146,7 +172,11 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                         .map { it.trimEnd('\r') }
                         .filter { it.isNotEmpty() }
                     if (newLines.isNotEmpty()) {
-                        _logLines.update { (it + newLines).takeLast(1000) }
+                        newLines.forEach { line ->
+                            if (logBuffer.size >= 1000) logBuffer.removeFirst()
+                            logBuffer.addLast(line)
+                        }
+                        _logLines.value = logBuffer.toList()
                     }
                 }
             }
@@ -162,6 +192,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         connectionEventJob = null
         logCollectorJob?.cancel()
         logCollectorJob = null
+        fieldDebounceJobs.values.forEach { it.cancel() }
+        fieldDebounceJobs.clear()
         protocol?.close()
         protocol = null
         serialManager.close()
@@ -170,7 +202,12 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         _dirty.value = false
     }
 
-    fun clearLog() { _logLines.value = emptyList() }
+    fun clearLog() { logBuffer.clear(); _logLines.value = emptyList() }
+
+    override fun onCleared() {
+        stopLocationFetch()
+        super.onCleared()
+    }
 
     private suspend fun enterSetupAndLoad(proto: ProtocolHandler) {
         when (val r = proto.enterSetupMode()) {
@@ -235,6 +272,14 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun importJson(jsonText: String) = viewModelScope.launch {
+        // Fail fast on malformed JSON instead of waiting up to 30s for the device
+        // to reject it — importConfig() only completes on the import-success marker.
+        try {
+            json.decodeFromString(TrackerConfig.serializer(), jsonText)
+        } catch (e: Exception) {
+            snack("Invalid config JSON: ${e.message}")
+            return@launch
+        }
         snack("Sending config…")
         when (val r = protocol?.importConfig(jsonText)) {
             is CommandResult.Ok -> snack("Import successful — device rebooting")
@@ -294,7 +339,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun scanWifiNetworks() = viewModelScope.launch {
         _wifiScanning.value = true
-        val r = protocol?.sendCommand("wifista scan")
+        val r = protocol?.sendCommand("wifista scan", timeoutMs = WIFI_SCAN_TIMEOUT_MS)
         when (r) {
             is CommandResult.Ok -> _wifiScanResults.value = r.text.lines()
                 .filter { it.startsWith("wifiSTA.scan:") }
@@ -378,28 +423,28 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- Beacon --
 
-    fun setCallsign(v: String) = sendField("beacon callsign $v") {
+    fun setCallsign(v: String) = sendField("beacon callsign $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(callsign = v.uppercase().trim()) }
     }
-    fun setSymbol(v: String) = sendField("beacon symbol $v") {
+    fun setSymbol(v: String) = sendField("beacon symbol $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(symbol = v) }
     }
-    fun setOverlay(v: String) = sendField("beacon overlay $v") {
+    fun setOverlay(v: String) = sendField("beacon overlay $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(overlay = v) }
     }
     fun setMicE(v: String) = sendField("beacon mice $v") {
         updateBeacon { copy(micE = v) }
     }
-    fun setComment(v: String) = sendField("beacon comment $v") {
+    fun setComment(v: String) = sendField("beacon comment $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(comment = v) }
     }
-    fun setStatus(v: String) = sendField("beacon status $v") {
+    fun setStatus(v: String) = sendField("beacon status $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(status = v) }
     }
-    fun setTacticalCallsign(v: String) = sendField("beacon tactical $v") {
+    fun setTacticalCallsign(v: String) = sendField("beacon tactical $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(tacticalCallsign = v.take(9)) }
     }
-    fun setProfileLabel(v: String) = sendField("beacon label $v") {
+    fun setProfileLabel(v: String) = sendField("beacon label $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(profileLabel = v) }
     }
     fun setSmartBeaconActive(v: Boolean) = sendField("beacon smart ${v.onOff}") {
@@ -411,7 +456,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- LoRa --
 
-    fun setLoraFreq(v: Long) = sendField("lora freq $v") {
+    fun setLoraFreq(v: Long) = sendField("lora freq $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateLora { copy(frequency = v) }
     }
     fun setLoraSf(v: Int) = sendField("lora sf $v") {
@@ -429,22 +474,22 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- SmartBeacon custom --
 
-    fun setSmartSlowRate(v: Int) = sendField("smartcustom slowrate $v") {
+    fun setSmartSlowRate(v: Int) = sendField("smartcustom slowrate $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateCustomSB { copy(slowRate = v) }
     }
-    fun setSmartSlowSpeed(v: Int) = sendField("smartcustom slowspeed $v") {
+    fun setSmartSlowSpeed(v: Int) = sendField("smartcustom slowspeed $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateCustomSB { copy(slowSpeed = v) }
     }
-    fun setSmartFastRate(v: Int) = sendField("smartcustom fastrate $v") {
+    fun setSmartFastRate(v: Int) = sendField("smartcustom fastrate $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateCustomSB { copy(fastRate = v) }
     }
-    fun setSmartFastSpeed(v: Int) = sendField("smartcustom fastspeed $v") {
+    fun setSmartFastSpeed(v: Int) = sendField("smartcustom fastspeed $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateCustomSB { copy(fastSpeed = v) }
     }
-    fun setSmartTurnMinDeg(v: Int) = sendField("smartcustom turnmindeg $v") {
+    fun setSmartTurnMinDeg(v: Int) = sendField("smartcustom turnmindeg $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateCustomSB { copy(turnMinDeg = v) }
     }
-    fun setSmartTurnSlope(v: Int) = sendField("smartcustom turnslope $v") {
+    fun setSmartTurnSlope(v: Int) = sendField("smartcustom turnslope $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateCustomSB { copy(turnSlope = v) }
     }
 
@@ -453,7 +498,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setDisplayEco(v: Boolean) = sendField("display eco ${v.onOff}") {
         updateDisplay { copy(ecoMode = v) }
     }
-    fun setDisplayTimeout(v: Int) = sendField("display timeout $v") {
+    fun setDisplayTimeout(v: Int) = sendField("display timeout $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateDisplay { copy(timeout = v) }
     }
     fun setDisplayTurn180(v: Boolean) = sendField("display turn180 ${v.onOff}") {
@@ -471,7 +516,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setBtActive(v: Boolean) = sendField("bt ${v.onOff}") {
         updateBt { copy(active = v) }
     }
-    fun setBtName(v: String) = sendField("bt name $v") {
+    fun setBtName(v: String) = sendField("bt name $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBt { copy(deviceName = v) }
     }
 
@@ -483,7 +528,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setBatSendVoltageAlways(v: Boolean) = sendField("bat alwaysv ${v.onOff}") {
         updateBat { copy(sendVoltageAlways = v) }
     }
-    fun setBatSleepVoltage(v: Float) = sendField("bat sleepv $v") {
+    fun setBatSleepVoltage(v: Float) = sendField("bat sleepv $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBat { copy(sleepVoltage = v) }
     }
 
@@ -492,16 +537,16 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setPttActive(v: Boolean) = sendField("ptt ${v.onOff}") {
         updatePtt { copy(active = v) }
     }
-    fun setPttPin(v: Int) = sendField("ptt pin $v") {
+    fun setPttPin(v: Int) = sendField("ptt pin $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updatePtt { copy(ioPin = v) }
     }
     fun setPttReverse(v: Boolean) = sendField("ptt reverse ${v.onOff}") {
         updatePtt { copy(reverse = v) }
     }
-    fun setPttPreDelay(v: Int) = sendField("ptt predelay $v") {
+    fun setPttPreDelay(v: Int) = sendField("ptt predelay $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updatePtt { copy(preDelay = v) }
     }
-    fun setPttPostDelay(v: Int) = sendField("ptt postdelay $v") {
+    fun setPttPostDelay(v: Int) = sendField("ptt postdelay $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updatePtt { copy(postDelay = v) }
     }
 
@@ -522,13 +567,13 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setPhgDirectivity(v: Int) = sendField("phg dir $v") {
         updatePhg { copy(directivity = v) }
     }
-    fun setPhgRate(v: Int) = sendField("phg rate $v") {
+    fun setPhgRate(v: Int) = sendField("phg rate $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updatePhg { copy(beaconRate = v) }
     }
 
     // -- WiFi AP --
 
-    fun setWifiApPassword(v: String) = sendField("wifi password $v") {
+    fun setWifiApPassword(v: String) = sendField("wifi password $v", debounceMs = FIELD_DEBOUNCE_MS) {
         update { copy(wifiAP = WifiAPConfig(password = v)) }
     }
 
@@ -548,25 +593,25 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun removeWifiStaNetwork(i: Int) = sendField("wifista remove $i") {
         updateWifiSta { copy(networks = networks.filterIndexed { idx, _ -> idx != i }) }
     }
-    fun setWifiStaSsid(i: Int, v: String) = sendField("wifista ssid $i $v") {
+    fun setWifiStaSsid(i: Int, v: String) = sendField("wifista ssid $i $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateWifiSta { copy(networks = networks.mapIndexed { idx, n -> if (idx == i) n.copy(ssid = v) else n }) }
     }
-    fun setWifiStaPassword(i: Int, v: String) = sendField("wifista password $i $v") {
+    fun setWifiStaPassword(i: Int, v: String) = sendField("wifista password $i $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateWifiSta { copy(networks = networks.mapIndexed { idx, n -> if (idx == i) n.copy(password = v) else n }) }
     }
 
     // -- APRS-IS --
 
-    fun setAprsIsServer(v: String) = sendField("aprsiss server $v") {
+    fun setAprsIsServer(v: String) = sendField("aprsiss server $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateAprsIs { copy(server = v) }
     }
-    fun setAprsIsPort(v: Int) = sendField("aprsiss port $v") {
+    fun setAprsIsPort(v: Int) = sendField("aprsiss port $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateAprsIs { copy(port = v) }
     }
-    fun setAprsIsPasscode(v: String) = sendField("aprsiss passcode $v") {
+    fun setAprsIsPasscode(v: String) = sendField("aprsiss passcode $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateAprsIs { copy(passcode = v) }
     }
-    fun setAprsIsFilter(v: String) = sendField("aprsiss filter $v") {
+    fun setAprsIsFilter(v: String) = sendField("aprsiss filter $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateAprsIs { copy(filter = v) }
     }
     fun setAprsIsDownlink(v: Boolean) = sendField("aprsiss downlink ${v.onOff}") {
@@ -575,7 +620,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- TCP KISS --
 
-    fun setTcpKissPort(v: Int) = sendField("tcpkiss port $v") {
+    fun setTcpKissPort(v: Int) = sendField("tcpkiss port $v", debounceMs = FIELD_DEBOUNCE_MS) {
         update { copy(tcpKISS = TcpKissConfig(port = v)) }
     }
 
@@ -590,14 +635,72 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- Fixed position --
 
-    fun setFixedLat(v: Float) = sendField("fixed latitude $v") {
+    fun setFixedLat(v: Float) = sendField("fixed latitude $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateFixed { copy(latitude = v) }
     }
-    fun setFixedLon(v: Float) = sendField("fixed longitude $v") {
+    fun setFixedLon(v: Float) = sendField("fixed longitude $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateFixed { copy(longitude = v) }
     }
-    fun setFixedElev(v: Float) = sendField("fixed elevation $v") {
+    fun setFixedElev(v: Float) = sendField("fixed elevation $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateFixed { copy(elevation = v) }
+    }
+
+    /**
+     * Fetches a one-shot device location fix via [LocationManager] — no Play Services
+     * dependency, consistent with the rest of this app — and fills the fixed lat/lon/
+     * elevation fields from it. Caller must have already confirmed ACCESS_FINE_LOCATION
+     * (or ACCESS_COARSE_LOCATION) is granted; this method assumes that check was done.
+     */
+    @SuppressLint("MissingPermission")
+    fun useDeviceLocation() {
+        if (_locationFetching.value) return
+        val lm = getApplication<Application>().getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val provider = when {
+            lm.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+            lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+            else -> null
+        }
+        if (provider == null) {
+            snack("Enable device location (GPS) to use this")
+            return
+        }
+
+        _locationFetching.value = true
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) = applyDeviceLocation(location)
+        }
+        locationListener = listener
+        // Providers can hang indefinitely indoors/without a fix — give up after 20s.
+        locationTimeoutJob = viewModelScope.launch {
+            delay(20_000)
+            stopLocationFetch()
+            snack("Timed out waiting for a location fix")
+        }
+        lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+    }
+
+    private fun applyDeviceLocation(location: Location) {
+        stopLocationFetch()
+        setFixedLat(location.latitude.toFloat())
+        setFixedLon(location.longitude.toFloat())
+        if (location.hasAltitude()) setFixedElev(location.altitude.toFloat())
+        val acc = if (location.hasAccuracy()) " (±${location.accuracy.roundToInt()}m)" else ""
+        snack("Location filled$acc — review and Save.")
+    }
+
+    fun locationPermissionDenied() {
+        snack("Location permission denied — can't fill in device location")
+    }
+
+    private fun stopLocationFetch() {
+        locationTimeoutJob?.cancel()
+        locationTimeoutJob = null
+        locationListener?.let { listener ->
+            val lm = getApplication<Application>().getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            lm.removeUpdates(listener)
+        }
+        locationListener = null
+        _locationFetching.value = false
     }
 
     // -- Other --
@@ -605,10 +708,10 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setBeaconPath(v: String) = sendField("beaconpath $v") {
         updateOther { copy(beaconPath = v) }
     }
-    fun setNonSmartRate(v: Int) = sendField("nonsmartrate $v") {
+    fun setNonSmartRate(v: Int) = sendField("nonsmartrate $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateOther { copy(nonSmartBeaconRate = v) }
     }
-    fun setSendCommentAfter(v: Int) = sendField("commentafter $v") {
+    fun setSendCommentAfter(v: Int) = sendField("commentafter $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateOther { copy(sendCommentAfterXBeacons = v) }
     }
     fun setSendAltitude(v: Boolean) = sendField("sendalt ${v.onOff}") {
@@ -630,16 +733,71 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun snack(msg: String) { _snackMessage.value = msg }
 
-    /** Applies [localUpdate] immediately to _config, then sends [cmd] in background. */
-    private fun sendField(cmd: String, localUpdate: TrackerConfig.() -> Unit) =
-        viewModelScope.launch {
-            _config.value?.localUpdate() ?: return@launch
-            _dirty.value = true
-            val result = protocol?.sendCommand(cmd)
-            if (result is CommandResult.Err && result.message.startsWith("ERR:")) {
-                _lastError.value = FieldError(cmd.substringBefore(" "), result.message)
+    /**
+     * Applies [localUpdate] immediately to _config for a responsive UI, then sends [cmd].
+     *
+     * [debounceMs] > 0 coalesces rapid repeated calls for the same field (e.g. one per
+     * keystroke while typing a callsign) into a single send after the user pauses —
+     * only the final value goes over the wire instead of one command per character.
+     * Toggles/dropdowns/sliders fire once per user action already, so they pass the
+     * default 0 (send immediately).
+     *
+     * If the firmware rejects the value or the command times out, [lastError] is set
+     * and the local config is re-synced from the device so the UI doesn't keep showing
+     * a value the device never actually accepted.
+     */
+    private fun sendField(cmd: String, debounceMs: Long = 0L, localUpdate: TrackerConfig.() -> Unit) {
+        _config.value?.localUpdate() ?: return
+        _dirty.value = true
+
+        val fieldKey = cmd.substringBeforeLast(" ")
+        fieldDebounceJobs.remove(fieldKey)?.cancel()
+
+        if (debounceMs <= 0L) {
+            viewModelScope.launch { dispatchField(cmd, fieldKey) }
+        } else {
+            fieldDebounceJobs[fieldKey] = viewModelScope.launch {
+                delay(debounceMs)
+                fieldDebounceJobs.remove(fieldKey)
+                dispatchField(cmd, fieldKey)
             }
         }
+    }
+
+    private suspend fun dispatchField(cmd: String, fieldKey: String) {
+        when (val result = protocol?.sendCommand(cmd)) {
+            is CommandResult.Err -> {
+                _lastError.value = FieldError(fieldKey, result.message)
+                resyncFromDevice()
+            }
+            CommandResult.Timeout -> {
+                _lastError.value = FieldError(fieldKey, "timed out — re-checking device")
+                resyncFromDevice()
+            }
+            is CommandResult.Ok -> {
+                if (_lastError.value?.field == fieldKey) _lastError.value = null
+            }
+            null -> {}
+        }
+    }
+
+    /**
+     * Re-fetches the live config from the device so a rejected/timed-out field's
+     * optimistic local value (applied immediately by [sendField], before the firmware
+     * had a chance to confirm it) is corrected back to what the device actually holds.
+     * Best-effort: if the resync itself fails, the previous local state is left as-is
+     * rather than being cleared.
+     */
+    private suspend fun resyncFromDevice() {
+        val proto = protocol ?: return
+        val r = proto.exportConfig()
+        if (r is CommandResult.Ok) {
+            try {
+                _config.value = json.decodeFromString(TrackerConfig.serializer(), r.text)
+            } catch (_: Exception) {
+            }
+        }
+    }
 
     private fun update(fn: TrackerConfig.() -> TrackerConfig) {
         _config.value = _config.value?.fn()
