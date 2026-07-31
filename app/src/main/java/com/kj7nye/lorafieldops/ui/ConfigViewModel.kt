@@ -13,6 +13,7 @@ import com.kj7nye.lorafieldops.model.CustomSmartBeaconConfig
 import com.kj7nye.lorafieldops.model.DeviceRole
 import com.kj7nye.lorafieldops.model.DigiMode
 import com.kj7nye.lorafieldops.model.DisplayConfig
+import com.kj7nye.lorafieldops.model.FirmwareVersion
 import com.kj7nye.lorafieldops.model.FixedPositionConfig
 import com.kj7nye.lorafieldops.model.GpsSource
 import com.kj7nye.lorafieldops.model.LoraConfig
@@ -68,6 +69,12 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _lastError = MutableStateFlow<FieldError?>(null)
     val lastError: StateFlow<FieldError?> = _lastError.asStateFlow()
+
+    // Parsed from the `version` command's git-describe string. Null until read,
+    // or if the firmware reports something unparseable (e.g. "unknown") — treat
+    // null as "can't confirm", not as "old" or "new".
+    private val _firmwareVersion = MutableStateFlow<FirmwareVersion?>(null)
+    val firmwareVersion: StateFlow<FirmwareVersion?> = _firmwareVersion.asStateFlow()
 
     private val _statusLines = MutableStateFlow<Map<String, String>>(emptyMap())
     val statusLines: StateFlow<Map<String, String>> = _statusLines.asStateFlow()
@@ -168,6 +175,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         _connectionState.value = ConnectionState.Disconnected
         _config.value = null
         _dirty.value = false
+        _firmwareVersion.value = null
     }
 
     fun clearLog() { _logLines.value = emptyList() }
@@ -176,7 +184,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         when (val r = proto.enterSetupMode()) {
             is CommandResult.Timeout -> snack("Setup mode entry timed out — check baud rate")
             is CommandResult.Err     -> snack("Setup entry failed: ${r.message}")
-            is CommandResult.Ok      -> loadConfig(proto)
+            is CommandResult.Ok      -> { loadConfig(proto); readFirmwareVersion() }
         }
     }
 
@@ -315,9 +323,11 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun readFirmwareVersion() = viewModelScope.launch {
         val r = protocol?.sendCommand("version") ?: return@launch
         if (r is CommandResult.Ok) {
+            val versionText = r.text.removePrefix("version.date=").trim()
             val lines = _statusLines.value.toMutableMap()
-            lines["version"] = r.text.removePrefix("version.date=").trim()
+            lines["version"] = versionText
             _statusLines.value = lines
+            _firmwareVersion.value = FirmwareVersion.parse(versionText)
         }
     }
 
@@ -630,14 +640,37 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun snack(msg: String) { _snackMessage.value = msg }
 
-    /** Applies [localUpdate] immediately to _config, then sends [cmd] in background. */
+    /**
+     * Applies [localUpdate] immediately to _config, then sends [cmd] in background.
+     *
+     * The local update is optimistic — applied before the firmware has actually
+     * confirmed it — so on rejection the UI can be briefly out of sync with the
+     * device until the user notices the error and corrects the field. A firmware
+     * rejection comes back as CommandResult.Ok (the prompt still returns
+     * normally) with an "ERR" response line, NOT as CommandResult.Err — that
+     * variant is reserved for local I/O failures. Older/mismatched firmware is
+     * exactly where this rejection path matters most, so it must actually
+     * reach the user instead of being swallowed.
+     */
     private fun sendField(cmd: String, localUpdate: TrackerConfig.() -> Unit) =
         viewModelScope.launch {
             _config.value?.localUpdate() ?: return@launch
             _dirty.value = true
-            val result = protocol?.sendCommand(cmd)
-            if (result is CommandResult.Err && result.message.startsWith("ERR:")) {
-                _lastError.value = FieldError(cmd.substringBefore(" "), result.message)
+            val field = cmd.substringBefore(" ")
+            when (val result = protocol?.sendCommand(cmd)) {
+                is CommandResult.Ok -> if (result.text.startsWith("ERR")) {
+                    _lastError.value = FieldError(field, result.text)
+                    snack("Rejected by firmware: ${result.text}")
+                }
+                is CommandResult.Err -> {
+                    _lastError.value = FieldError(field, result.message)
+                    snack("Command failed: ${result.message}")
+                }
+                CommandResult.Timeout -> {
+                    _lastError.value = FieldError(field, "timed out")
+                    snack("Command timed out: $cmd")
+                }
+                null -> snack("Not connected")
             }
         }
 

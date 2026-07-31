@@ -51,6 +51,7 @@ import com.kj7nye.lorafieldops.model.SMARTBEACON_LABELS
 import com.kj7nye.lorafieldops.model.BEACON_PATH_OPTIONS
 import com.kj7nye.lorafieldops.model.DeviceRole
 import com.kj7nye.lorafieldops.model.DigiMode
+import com.kj7nye.lorafieldops.model.FirmwareVersion
 import com.kj7nye.lorafieldops.model.GpsSource
 
 // Board-agnostic curated set: 20 dBm is the safe ceiling on every supported
@@ -94,7 +95,17 @@ private val MIC_E_OPTIONS = listOf(
 fun ConfigScreen(vm: ConfigViewModel) {
     val cfg by vm.config.collectAsState()
     val dirty by vm.dirty.collectAsState()
+    val fwVersion by vm.firmwareVersion.collectAsState()
     var showDiscardDialog by remember { mutableStateOf(false) }
+
+    // Feature floors verified against tagged firmware source — see FirmwareVersion.kt.
+    // Version unknown (not yet read, or unparseable) fails open for features whose
+    // rejection is safely surfaced as an error; wifista multi-network fails closed
+    // because older firmware silently corrupts rather than rejects that command.
+    val supportsPhg = fwVersion?.let { it >= FirmwareVersion.MIN_PHG } ?: true
+    val supportsAprsIsDownlink = fwVersion?.let { it >= FirmwareVersion.MIN_APRSIS_DOWNLINK } ?: true
+    val supportsWifiMultiNetwork = fwVersion?.let { it >= FirmwareVersion.MIN_WIFI_MULTI_NETWORK } ?: false
+    val fwHint = fwVersion?.let { " (connected firmware: v$it)" } ?: ""
 
     if (cfg == null) {
         Column(
@@ -270,21 +281,28 @@ fun ConfigScreen(vm: ConfigViewModel) {
             }
 
             Section("PHG (Station Power-Height-Gain)") {
-                val p = c.phg
-                SwitchRow("PHG beacon active", p.enabled) { vm.setPhgEnabled(it) }
-                LabeledSlider("Power code", p.power.toFloat(), 0f, 9f, steps = 8) {
-                    vm.setPhgPower(it.toInt())
+                if (supportsPhg) {
+                    val p = c.phg
+                    SwitchRow("PHG beacon active", p.enabled) { vm.setPhgEnabled(it) }
+                    LabeledSlider("Power code", p.power.toFloat(), 0f, 9f, steps = 8) {
+                        vm.setPhgPower(it.toInt())
+                    }
+                    LabeledSlider("Height code", p.height.toFloat(), 0f, 9f, steps = 8) {
+                        vm.setPhgHeight(it.toInt())
+                    }
+                    LabeledSlider("Gain code", p.gain.toFloat(), 0f, 9f, steps = 8) {
+                        vm.setPhgGain(it.toInt())
+                    }
+                    LabeledSlider("Directivity code", p.directivity.toFloat(), 0f, 9f, steps = 8) {
+                        vm.setPhgDirectivity(it.toInt())
+                    }
+                    IntField("Beacon interval (min)", p.beaconRate) { vm.setPhgRate(it) }
+                } else {
+                    Text(
+                        "Requires firmware v${FirmwareVersion.MIN_PHG} or newer$fwHint.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
-                LabeledSlider("Height code", p.height.toFloat(), 0f, 9f, steps = 8) {
-                    vm.setPhgHeight(it.toInt())
-                }
-                LabeledSlider("Gain code", p.gain.toFloat(), 0f, 9f, steps = 8) {
-                    vm.setPhgGain(it.toInt())
-                }
-                LabeledSlider("Directivity code", p.directivity.toFloat(), 0f, 9f, steps = 8) {
-                    vm.setPhgDirectivity(it.toInt())
-                }
-                IntField("Beacon interval (min)", p.beaconRate) { vm.setPhgRate(it) }
             }
 
             Section("WiFi AP") {
@@ -294,42 +312,58 @@ fun ConfigScreen(vm: ConfigViewModel) {
             Section("WiFi STA") {
                 val w = c.wifiSTA
                 SwitchRow("Enable WiFi STA", w.enabled) { vm.setWifiStaEnabled(it) }
-                Text(
-                    "Up to 5 networks, tried in order top to bottom. Stays connected until the link drops.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
 
-                w.networks.forEachIndexed { i, net ->
-                    HorizontalDivider()
-                    LabeledTextField("SSID ${i + 1}", net.ssid) { vm.setWifiStaSsid(i, it) }
-                    PasswordField("Password ${i + 1}", net.password) { vm.setWifiStaPassword(i, it) }
-                    TextButton(onClick = { vm.removeWifiStaNetwork(i) }) { Text("Delete network ${i + 1}") }
-                }
+                if (supportsWifiMultiNetwork) {
+                    Text(
+                        "Up to 5 networks, tried in order top to bottom. Stays connected until the link drops.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
 
-                if (w.networks.size < 5) {
-                    OutlinedButton(onClick = { vm.addWifiStaNetwork("") }) { Text("+ Add network") }
-                }
+                    w.networks.forEachIndexed { i, net ->
+                        HorizontalDivider()
+                        LabeledTextField("SSID ${i + 1}", net.ssid) { vm.setWifiStaSsid(i, it) }
+                        PasswordField("Password ${i + 1}", net.password) { vm.setWifiStaPassword(i, it) }
+                        TextButton(onClick = { vm.removeWifiStaNetwork(i) }) { Text("Delete network ${i + 1}") }
+                    }
 
-                val scanning by vm.wifiScanning.collectAsState()
-                val scanResults by vm.wifiScanResults.collectAsState()
-                OutlinedButton(onClick = { vm.scanWifiNetworks() }, enabled = !scanning) {
-                    Text(if (scanning) "Scanning… (blocks the device a few seconds)" else "Scan for networks")
-                }
-                if (scanResults.isNotEmpty()) {
-                    HorizontalDivider()
-                    Text("Nearby networks — tap to add", style = MaterialTheme.typography.labelMedium)
-                    scanResults.sortedByDescending { it.rssi }.forEach { net ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = w.networks.size < 5) { vm.addWifiStaNetwork(net.ssid) },
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(if (net.secure) "🔒 ${net.ssid}" else net.ssid)
-                            Text("${net.rssi} dBm", style = MaterialTheme.typography.bodySmall)
+                    if (w.networks.size < 5) {
+                        OutlinedButton(onClick = { vm.addWifiStaNetwork("") }) { Text("+ Add network") }
+                    }
+
+                    val scanning by vm.wifiScanning.collectAsState()
+                    val scanResults by vm.wifiScanResults.collectAsState()
+                    OutlinedButton(onClick = { vm.scanWifiNetworks() }, enabled = !scanning) {
+                        Text(if (scanning) "Scanning… (blocks the device a few seconds)" else "Scan for networks")
+                    }
+                    if (scanResults.isNotEmpty()) {
+                        HorizontalDivider()
+                        Text("Nearby networks — tap to add", style = MaterialTheme.typography.labelMedium)
+                        scanResults.sortedByDescending { it.rssi }.forEach { net ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = w.networks.size < 5) { vm.addWifiStaNetwork(net.ssid) },
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(if (net.secure) "🔒 ${net.ssid}" else net.ssid)
+                                Text("${net.rssi} dBm", style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                     }
+                } else {
+                    // Older firmware parses "wifista ssid <i> <ssid>" as a flat,
+                    // non-indexed command and silently mis-stores the index digit
+                    // as part of the SSID instead of rejecting it — so this UI stays
+                    // hidden entirely rather than risk sending it. See FirmwareVersion.kt.
+                    Text(
+                        if (fwVersion == null) {
+                            "Saved-network list unavailable until firmware version is confirmed."
+                        } else {
+                            "Multiple saved networks require firmware v${FirmwareVersion.MIN_WIFI_MULTI_NETWORK} or newer$fwHint."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
 
@@ -339,12 +373,19 @@ fun ConfigScreen(vm: ConfigViewModel) {
                 IntField("Port", a.port) { vm.setAprsIsPort(it) }
                 LabeledTextField("Passcode", a.passcode) { vm.setAprsIsPasscode(it) }
                 LabeledTextField("Filter", a.filter) { vm.setAprsIsFilter(it) }
-                SwitchRow("Downlink to RF", a.downlinkEnabled) { vm.setAprsIsDownlink(it) }
-                Text(
-                    "Gates directed messages from APRS-IS back to RF, but only to a " +
-                        "station heard directly on RF in the last 30 minutes.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                if (supportsAprsIsDownlink) {
+                    SwitchRow("Downlink to RF", a.downlinkEnabled) { vm.setAprsIsDownlink(it) }
+                    Text(
+                        "Gates directed messages from APRS-IS back to RF, but only to a " +
+                            "station heard directly on RF in the last 30 minutes.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Text(
+                        "Downlink to RF requires firmware v${FirmwareVersion.MIN_APRSIS_DOWNLINK} or newer$fwHint.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
 
             Section("TCP KISS") {
