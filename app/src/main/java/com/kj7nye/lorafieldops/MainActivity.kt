@@ -110,11 +110,17 @@ private fun MainNavigation(vm: ConfigViewModel) {
         }
     }
 
-    // Navigate to connect screen on disconnect, clearing the entire back stack.
+    // Navigate to connect screen on disconnect OR connection loss, clearing the entire
+    // back stack. Without the Error case here, a USB drop while the user is on Config/
+    // Status/Log left them stranded on that screen — the bottom nav disappears (isConnected
+    // becomes false) but nothing routes them back to where they can actually reconnect.
+    // ConnectionScreen already renders ConnectionState.Error with a message + device list,
+    // and reconnecting re-syncs config from the device via loadConfig(), so anything that
+    // was already sent to the device before the drop comes back automatically.
     // popUpTo(ROUTE_CONNECT) would fail silently if ROUTE_CONNECT was already popped
     // when navigating to config (it was). popUpTo(0) always clears everything.
     LaunchedEffect(connState) {
-        if (connState is ConnectionState.Disconnected) {
+        if (connState is ConnectionState.Disconnected || connState is ConnectionState.Error) {
             navController.navigate(ROUTE_CONNECT) {
                 popUpTo(0) { inclusive = true }
             }

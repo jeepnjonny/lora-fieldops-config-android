@@ -27,6 +27,10 @@ private const val SETUP_ENTRY_TIMEOUT_MS  = 15_000L
 private const val ENTRY_DELAY1_MS         = 150L
 private const val ENTRY_DELAY2_MS         = 400L
 
+/** The firmware's `wifista scan` blocks the device for several seconds; give it more room
+ *  than the default command timeout so a slightly slow scan doesn't false-timeout. */
+const val WIFI_SCAN_TIMEOUT_MS = 20_000L
+
 /** Result wrapper for a single serial command exchange. */
 sealed class CommandResult {
     data class Ok(val text: String)  : CommandResult()
@@ -105,9 +109,9 @@ class ProtocolHandler(
         }
     }
 
-    /** Send a text command and wait for the `\n> ` prompt. */
-    suspend fun sendCommand(cmdText: String): CommandResult {
-        val cmd = PendingCommand("$cmdText\r\n")
+    /** Send a text command and wait for the `\n> ` prompt, timing out after [timeoutMs]. */
+    suspend fun sendCommand(cmdText: String, timeoutMs: Long = CMD_TIMEOUT_MS): CommandResult {
+        val cmd = PendingCommand("$cmdText\r\n", timeoutMs)
         cmdQueue.send(cmd)
         return cmd.await()
     }
@@ -171,8 +175,13 @@ class ProtocolHandler(
             else if (accum.contains("[LOG]"))        mode = SerialMode.LOG
 
             // --- Mode-entry completion (enterSetupMode) ---
+            // Wait for the trailing PROMPT specifically, not just the banner: the banner
+            // and its prompt can arrive in separate USB reads, and completing on the banner
+            // alone leaves the real "\n> " to land in a freshly-cleared accum with nothing
+            // listening for it — it then leaks into and prematurely terminates the very
+            // next command (almost always the post-connect `export`).
             val ed = entryDeferred
-            if (ed != null && (accum.contains(BANNER_SETUP) || accum.contains(PROMPT))) {
+            if (ed != null && accum.contains(PROMPT)) {
                 entryDeferred = null
                 ed.complete(CommandResult.Ok(accum.toString()))
                 accum.clear()
@@ -218,7 +227,7 @@ class ProtocolHandler(
                 continue
             }
             try {
-                withTimeout(CMD_TIMEOUT_MS) { cmd.await() }
+                withTimeout(cmd.timeoutMs) { cmd.await() }
             } catch (e: TimeoutCancellationException) {
                 pending = null
                 cmd.complete(CommandResult.Timeout)
@@ -228,7 +237,7 @@ class ProtocolHandler(
 }
 
 /** A queued command with its own deferred result. */
-private class PendingCommand(val text: String = "") {
+private class PendingCommand(val text: String = "", val timeoutMs: Long = CMD_TIMEOUT_MS) {
     private val deferred = CompletableDeferred<CommandResult>()
     fun complete(result: CommandResult) { deferred.complete(result) }
     suspend fun await(): CommandResult  = deferred.await()

@@ -1,5 +1,9 @@
 package com.kj7nye.lorafieldops.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -44,9 +48,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.kj7nye.lorafieldops.model.SMARTBEACON_LABELS
 import com.kj7nye.lorafieldops.model.BEACON_PATH_OPTIONS
 import com.kj7nye.lorafieldops.model.DeviceRole
@@ -96,6 +102,7 @@ fun ConfigScreen(vm: ConfigViewModel) {
     val cfg by vm.config.collectAsState()
     val dirty by vm.dirty.collectAsState()
     val fwVersion by vm.firmwareVersion.collectAsState()
+    val fieldError by vm.lastError.collectAsState()
     var showDiscardDialog by remember { mutableStateOf(false) }
 
     // Feature floors verified against tagged firmware source — see FirmwareVersion.kt.
@@ -167,6 +174,10 @@ fun ConfigScreen(vm: ConfigViewModel) {
                     color = MaterialTheme.colorScheme.errorContainer,
                     label = "⚠ Callsign is NOCALL — transmit is blocked by firmware",
                 )
+            }
+
+            fieldError?.let { err ->
+                FieldErrorBanner(err) { vm.clearFieldError() }
             }
 
             Section("Beacon") {
@@ -424,6 +435,31 @@ fun ConfigScreen(vm: ConfigViewModel) {
                     FloatField("Latitude (dd.dddddd)", fp.latitude) { vm.setFixedLat(it) }
                     FloatField("Longitude (dd.dddddd)", fp.longitude) { vm.setFixedLon(it) }
                     FloatField("Elevation (m)", fp.elevation) { vm.setFixedElev(it) }
+
+                    val context = LocalContext.current
+                    val locating by vm.locationFetching.collectAsState()
+                    val locationPermissionLauncher = rememberLauncherForActivityResult(
+                        ActivityResultContracts.RequestPermission(),
+                    ) { granted ->
+                        if (granted) vm.useDeviceLocation() else vm.locationPermissionDenied()
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val granted = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (granted) {
+                                vm.useDeviceLocation()
+                            } else {
+                                locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                            }
+                        },
+                        enabled = !locating,
+                    ) {
+                        Text(if (locating) "Fetching location…" else "📍 Use This Device's Location")
+                    }
                 }
             }
 
@@ -474,6 +510,35 @@ private fun Card(color: androidx.compose.ui.graphics.Color, label: String) {
         modifier = Modifier.fillMaxWidth(),
         colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = color),
     ) { Text(label, modifier = Modifier.padding(12.dp)) }
+}
+
+/** Shown when the firmware rejects a field edit, or a field command times out — see
+ *  ConfigViewModel.dispatchField(). Dismissible since it otherwise sticks around until
+ *  the same field is edited again successfully. */
+@Composable
+private fun FieldErrorBanner(error: FieldError, onDismiss: () -> Unit) {
+    androidx.compose.material3.Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = androidx.compose.material3.CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "⚠ \"${error.field}\" was rejected: ${error.message}",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            TextButton(onClick = onDismiss) { Text("Dismiss") }
+        }
+    }
 }
 
 @Composable
