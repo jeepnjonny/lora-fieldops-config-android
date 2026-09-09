@@ -26,6 +26,7 @@ import com.kj7nye.lorafieldops.model.LoraConfig
 import com.kj7nye.lorafieldops.model.OtherConfig
 import com.kj7nye.lorafieldops.model.PhgConfig
 import com.kj7nye.lorafieldops.model.PttTriggerConfig
+import com.kj7nye.lorafieldops.model.RemoteCfgConfig
 import com.kj7nye.lorafieldops.model.TcpKissConfig
 import com.kj7nye.lorafieldops.model.TrackerConfig
 import com.kj7nye.lorafieldops.model.WifiAPConfig
@@ -581,6 +582,18 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         updatePhg { copy(beaconRate = v) }
     }
 
+    // -- Remote config (CourseSentry) --
+
+    fun setRemoteCfgEnabled(v: Boolean) = sendField("remotecfg ${v.onOff}") {
+        updateRemoteCfg { copy(enabled = v) }
+    }
+    fun setRemoteCfgToken(v: String) = sendField("remotecfg token $v", debounceMs = FIELD_DEBOUNCE_MS) {
+        updateRemoteCfg { copy(token = v) }
+    }
+    fun setRemoteCfgWindow(v: Int) = sendField("remotecfg window $v", debounceMs = FIELD_DEBOUNCE_MS) {
+        updateRemoteCfg { copy(unlockWindowSec = v) }
+    }
+
     // -- WiFi AP --
 
     fun setWifiApPassword(v: String) = sendField("wifi password $v", debounceMs = FIELD_DEBOUNCE_MS) {
@@ -836,6 +849,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         update { copy(pttTrigger = pttTrigger.fn()) }
     private fun updatePhg(fn: PhgConfig.() -> PhgConfig) =
         update { copy(phg = phg.fn()) }
+    private fun updateRemoteCfg(fn: RemoteCfgConfig.() -> RemoteCfgConfig) =
+        update { copy(remoteCfg = remoteCfg.fn()) }
     private fun updateWifiSta(fn: WifiSTAConfig.() -> WifiSTAConfig) =
         update { copy(wifiSTA = wifiSTA.fn()) }
     private fun updateAprsIs(fn: AprsIsConfig.() -> AprsIsConfig) =
