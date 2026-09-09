@@ -116,10 +116,14 @@ class SerialManager(private val context: Context) {
                 p.rts = true
             } else {
                 // UART-bridge boards (CP210x/CH340/FTDI) — including the Heltec V3.2's
-                // CP2102N — wire RTS to EN and DTR to GPIO0 for esptool's auto-reset/
-                // bootloader-entry circuit. Asserting both here reproduces that entry
-                // sequence and drops the board into download mode instead of a normal
-                // serial console, so leave them deasserted on these boards.
+                // CP2102N — wire RTS to EN and DTR to GPIO0 for esptool's auto-reset
+                // circuit (both active-low). Deasserted/deasserted is the neutral,
+                // both-lines-released state (EN high, GPIO0 high) that leaves the
+                // board running normally. Asserting DTR alone holds GPIO0 low for the
+                // whole session — which on boards where GPIO0 doubles as the USR
+                // button reads as a stuck button press — and asserting both together
+                // is worse: it holds EN low, keeping the chip in reset the entire
+                // time it's connected. So leave both deasserted on these boards.
                 p.dtr = false
                 p.rts = false
             }
