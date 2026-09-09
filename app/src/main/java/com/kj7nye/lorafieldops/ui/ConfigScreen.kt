@@ -471,7 +471,7 @@ fun ConfigScreen(vm: ConfigViewModel) {
                     // Legacy configs stored "" for no-repeat; normalize to the explicit DIRECT option.
                     selected = o.beaconPath.ifEmpty { "DIRECT" },
                 ) { vm.setBeaconPath(it) }
-                IntField("Non-smart rate (min)", o.nonSmartBeaconRate) { vm.setNonSmartRate(it) }
+                IntField("Non-smart rate (sec)", o.nonSmartBeaconRateSec) { vm.setNonSmartRate(it) }
                 IntField("Comment after N beacons", o.sendCommentAfterXBeacons) {
                     vm.setSendCommentAfter(it)
                 }

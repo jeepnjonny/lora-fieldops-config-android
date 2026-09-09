@@ -719,7 +719,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         updateOther { copy(beaconPath = v) }
     }
     fun setNonSmartRate(v: Int) = sendField("nonsmartrate $v", debounceMs = FIELD_DEBOUNCE_MS) {
-        updateOther { copy(nonSmartBeaconRate = v) }
+        updateOther { copy(nonSmartBeaconRateSec = v) }
     }
     fun setSendCommentAfter(v: Int) = sendField("commentafter $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateOther { copy(sendCommentAfterXBeacons = v) }

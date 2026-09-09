@@ -73,7 +73,7 @@ data class BatteryConfig(
 data class OtherConfig(
     val sendCommentAfterXBeacons: Int = 10,
     val beaconPath: String = "WIDE1-1",
-    val nonSmartBeaconRate: Int = 15,
+    val nonSmartBeaconRateSec: Int = 900,
     val sendSpeedCourse: Boolean = true,
     val sendAltitude: Boolean = true,
     val digiMode: Int = 0,
