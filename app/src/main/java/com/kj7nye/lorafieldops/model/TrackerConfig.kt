@@ -27,6 +27,7 @@ data class TrackerConfig(
     @SerialName("pttTrigger")
     val pttTrigger: PttTriggerConfig = PttTriggerConfig(),
     val phg: PhgConfig = PhgConfig(),
+    val remoteCfg: RemoteCfgConfig = RemoteCfgConfig(),
 )
 
 @Serializable
@@ -152,6 +153,14 @@ data class PhgConfig(
     val gain: Int = 3,
     val directivity: Int = 0,
     val beaconRate: Int = 10,
+)
+
+/** Remote read/write config over APRS messages ("CourseSentry"). */
+@Serializable
+data class RemoteCfgConfig(
+    val enabled: Boolean = false,
+    val token: String = "",
+    val unlockWindowSec: Int = 300,
 )
 
 // ---------------------------------------------------------------------------

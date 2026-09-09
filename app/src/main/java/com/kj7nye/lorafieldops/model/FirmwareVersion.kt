@@ -39,5 +39,11 @@ data class FirmwareVersion(val major: Int, val minor: Int, val patch: Int) : Com
          * error after the fact.
          */
         val MIN_WIFI_MULTI_NETWORK = FirmwareVersion(1, 2, 0)
+        /**
+         * Remote read/write config over APRS messages ("CourseSentry",
+         * `remotecfg` command). Merged into firmware `main` at e1f9c6a and
+         * released as v1.3.0.
+         */
+        val MIN_REMOTE_CONFIG = FirmwareVersion(1, 3, 0)
     }
 }

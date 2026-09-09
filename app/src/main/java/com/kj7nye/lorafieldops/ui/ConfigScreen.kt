@@ -112,6 +112,7 @@ fun ConfigScreen(vm: ConfigViewModel) {
     val supportsPhg = fwVersion?.let { it >= FirmwareVersion.MIN_PHG } ?: true
     val supportsAprsIsDownlink = fwVersion?.let { it >= FirmwareVersion.MIN_APRSIS_DOWNLINK } ?: true
     val supportsWifiMultiNetwork = fwVersion?.let { it >= FirmwareVersion.MIN_WIFI_MULTI_NETWORK } ?: false
+    val supportsRemoteConfig = fwVersion?.let { it >= FirmwareVersion.MIN_REMOTE_CONFIG } ?: true
     val fwHint = fwVersion?.let { " (connected firmware: v$it)" } ?: ""
 
     if (cfg == null) {
@@ -311,6 +312,25 @@ fun ConfigScreen(vm: ConfigViewModel) {
                 } else {
                     Text(
                         "Requires firmware v${FirmwareVersion.MIN_PHG} or newer$fwHint.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+
+            Section("Remote Config (CourseSentry)") {
+                if (supportsRemoteConfig) {
+                    val r = c.remoteCfg
+                    SwitchRow("Enable remote config", r.enabled) { vm.setRemoteCfgEnabled(it) }
+                    PasswordField("Passcode", r.token) { vm.setRemoteCfgToken(it) }
+                    IntField("Write-unlock window (sec)", r.unlockWindowSec) { vm.setRemoteCfgWindow(it) }
+                    Text(
+                        "Lets the tracker be read and, after an APRS message with the correct " +
+                            "passcode, written to remotely over APRS. An empty passcode disables writes.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Text(
+                        "Requires firmware v${FirmwareVersion.MIN_REMOTE_CONFIG} or newer$fwHint.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
