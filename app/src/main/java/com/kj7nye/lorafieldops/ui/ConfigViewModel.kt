@@ -37,6 +37,8 @@ import com.kj7nye.lorafieldops.serial.ConnectionEvent
 import com.kj7nye.lorafieldops.serial.ProtocolHandler
 import com.kj7nye.lorafieldops.serial.SerialManager
 import com.kj7nye.lorafieldops.serial.WIFI_SCAN_TIMEOUT_MS
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -114,6 +116,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     // Backing store for _logLines — evicts from the front instead of rebuilding
     // a full `it + newLines` list (up to 1000+ elements) on every chunk.
     private val logBuffer = ArrayDeque<String>(1000)
+    private val logTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
     private var connectionEventJob: Job? = null
     private var logCollectorJob: Job? = null
@@ -182,7 +185,11 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                     if (newLines.isNotEmpty()) {
                         newLines.forEach { line ->
                             if (logBuffer.size >= 1000) logBuffer.removeFirst()
-                            logBuffer.addLast(line)
+                            // Device log output carries no timestamp of its own, so stamp
+                            // each line with local receipt time. This is a live tail with
+                            // no backlog replay, so receipt time is accurate to within
+                            // serial transmission latency.
+                            logBuffer.addLast("[${logTimeFormatter.format(LocalTime.now())}] $line")
                         }
                         _logLines.value = logBuffer.toList()
                     }
