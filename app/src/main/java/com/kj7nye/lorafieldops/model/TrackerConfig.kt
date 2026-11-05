@@ -77,6 +77,8 @@ data class OtherConfig(
     val nonSmartBeaconRateSec: Int = 900,
     val sendSpeedCourse: Boolean = true,
     val sendAltitude: Boolean = true,
+    /** Channel Activity Detection (listen before TX). Stored under "other"; shown in the LoRa section. */
+    val cadActive: Boolean = true,
     val digiMode: Int = 0,
 )
 

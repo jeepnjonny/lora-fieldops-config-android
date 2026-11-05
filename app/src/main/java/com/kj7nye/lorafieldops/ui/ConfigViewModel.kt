@@ -489,6 +489,10 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setLoraPower(v: Int) = sendField("lora power $v") {
         updateLora { copy(power = v) }
     }
+    // `cad` is the v1.4.1-compatible alias of `lora cad`, so older firmware accepts it too.
+    fun setCadActive(v: Boolean) = sendField("cad ${v.onOff}") {
+        updateOther { copy(cadActive = v) }
+    }
 
     // -- SmartBeacon custom --
 
