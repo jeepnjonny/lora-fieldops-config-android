@@ -272,6 +272,13 @@ fun ConfigScreen(vm: ConfigViewModel) {
             Section("Bluetooth") {
                 SwitchRow("Bluetooth active", c.bluetooth.active) { vm.setBtActive(it) }
                 LabeledTextField("Device name", c.bluetooth.deviceName) { vm.setBtName(it) }
+                SwitchRow("Require PIN", c.bluetooth.pinEnabled) { vm.setBtPinEnabled(it) }
+                BlePinField(c.bluetooth.pin, c.bluetooth.pinEnabled) { vm.setBtPin(it) }
+                Text(
+                    "Save + reboot to apply. After changing the PIN or turning it on/off, " +
+                        "forget the tracker in your phone's Bluetooth settings and pair again.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
 
             Section("Battery") {
@@ -595,6 +602,43 @@ private fun LabeledTextField(label: String, value: String, onValueChange: (Strin
         label = { Text(label) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
+    )
+}
+
+private val BLE_PIN_REGEX = Regex("[0-9]{4,6}")   // used with matches(), i.e. full-string match
+
+/**
+ * BLE pairing PIN editor. Only digits are accepted, and only a complete 4-6 digit
+ * PIN is sent to the tracker. BLE always pairs with a 6-digit passkey, so the
+ * supporting text shows the zero-padded digits the phone must be given.
+ */
+@Composable
+private fun BlePinField(value: String, pinEnabled: Boolean, onValidPin: (String) -> Unit) {
+    var text by remember(value) { mutableStateOf(value) }
+    val isValid = BLE_PIN_REGEX.matches(text)
+    OutlinedTextField(
+        value = text,
+        onValueChange = { s ->
+            if (s.length <= 6 && s.all { it.isDigit() }) {
+                text = s
+                if (BLE_PIN_REGEX.matches(s)) onValidPin(s)
+            }
+        },
+        label = { Text("PIN (4-6 digits)") },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        enabled = pinEnabled,
+        isError = pinEnabled && !isValid,
+        supportingText = {
+            Text(
+                when {
+                    !pinEnabled -> "PIN off: any nearby phone can connect"
+                    isValid     -> "Phone passkey: ${text.padStart(6, '0')}"
+                    else        -> "Enter 4 to 6 digits"
+                }
+            )
+        },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
     )
 }
 
