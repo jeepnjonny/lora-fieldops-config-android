@@ -84,6 +84,10 @@ data class OtherConfig(
 data class BluetoothConfig(
     val active: Boolean = false,
     val deviceName: String = "LoRaAPRS",
+    /** Require BLE Passkey Entry pairing before the tracker passes KISS traffic. */
+    val pinEnabled: Boolean = true,
+    /** 4-6 digit pairing PIN; phones enter it zero-padded to six digits (1234 -> 001234). */
+    val pin: String = "123456",
 )
 
 @Serializable

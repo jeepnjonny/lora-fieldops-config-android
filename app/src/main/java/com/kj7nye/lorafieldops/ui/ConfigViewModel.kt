@@ -537,6 +537,13 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setBtName(v: String) = sendField("bt name $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBt { copy(deviceName = v) }
     }
+    fun setBtPinEnabled(v: Boolean) = sendField("bt pin ${v.onOff}") {
+        updateBt { copy(pinEnabled = v) }
+    }
+    /** Caller must pass a valid 4-6 digit PIN; the firmware rejects anything else. */
+    fun setBtPin(v: String) = sendField("bt pin $v", debounceMs = FIELD_DEBOUNCE_MS) {
+        updateBt { copy(pin = v) }
+    }
 
     // -- Battery --
 
