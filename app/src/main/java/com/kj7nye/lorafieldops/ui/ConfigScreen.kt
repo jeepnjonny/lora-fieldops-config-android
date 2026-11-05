@@ -258,6 +258,14 @@ fun ConfigScreen(vm: ConfigViewModel) {
                         }
                     }
                 }
+                SwitchRow("Channel Activity Detection (CAD, listen before TX)", c.other.cadActive) {
+                    vm.setCadActive(it)
+                }
+                Text(
+                    "Waits for a clear channel plus a short random backoff before each TX; " +
+                        "transmits anyway after 10 s of a busy channel.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
 
             Section("Display") {
