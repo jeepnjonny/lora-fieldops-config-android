@@ -54,6 +54,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.kj7nye.lorafieldops.model.SMARTBEACON_LABELS
+import com.kj7nye.lorafieldops.model.SmartBeaconLimits
 import com.kj7nye.lorafieldops.model.BEACON_PATH_OPTIONS
 import com.kj7nye.lorafieldops.model.DeviceRole
 import com.kj7nye.lorafieldops.model.DigiMode
@@ -214,12 +215,16 @@ fun ConfigScreen(vm: ConfigViewModel) {
                     HorizontalDivider()
                     Text("Custom parameters", style = MaterialTheme.typography.labelMedium)
                     val sb = c.customSmartBeacon
-                    IntField("Slow rate (sec)", sb.slowRate) { vm.setSmartSlowRate(it) }
-                    IntField("Slow speed (km/h)", sb.slowSpeed) { vm.setSmartSlowSpeed(it) }
-                    IntField("Fast rate (sec)", sb.fastRate) { vm.setSmartFastRate(it) }
-                    IntField("Fast speed (km/h)", sb.fastSpeed) { vm.setSmartFastSpeed(it) }
-                    IntField("Min turn (deg)", sb.turnMinDeg) { vm.setSmartTurnMinDeg(it) }
-                    IntField("Turn slope", sb.turnSlope) { vm.setSmartTurnSlope(it) }
+                    IntField("Slow rate (sec)", sb.slowRate, SmartBeaconLimits.SLOW_RATE) { vm.setSmartSlowRate(it) }
+                    IntField("Slow speed (km/h)", sb.slowSpeed, SmartBeaconLimits.SLOW_SPEED) { vm.setSmartSlowSpeed(it) }
+                    IntField("Fast rate (sec)", sb.fastRate, SmartBeaconLimits.FAST_RATE) { vm.setSmartFastRate(it) }
+                    IntField("Fast speed (km/h)", sb.fastSpeed, SmartBeaconLimits.FAST_SPEED) { vm.setSmartFastSpeed(it) }
+                    IntField("Min turn (deg)", sb.turnMinDeg, SmartBeaconLimits.TURN_MIN_DEG) { vm.setSmartTurnMinDeg(it) }
+                    IntField("Turn slope", sb.turnSlope, SmartBeaconLimits.TURN_SLOPE) { vm.setSmartTurnSlope(it) }
+                    // Hidden on firmware that predates turnMinTime (key absent from its config).
+                    sb.turnMinTime?.let { minTime ->
+                        IntField("Min turn time (sec)", minTime, SmartBeaconLimits.TURN_MIN_TIME) { vm.setSmartTurnMinTime(it) }
+                    }
                 }
             }
 
@@ -663,18 +668,34 @@ private fun PasswordField(label: String, value: String, onValueChange: (String) 
     )
 }
 
+/**
+ * Integer text field. When [range] is given, values outside it are shown as an
+ * error and never passed to [onValueChange], so a half-typed number (e.g. "2"
+ * on the way to "20") is not sent to firmware that would reject it.
+ */
 @Composable
-private fun IntField(label: String, value: Int, onValueChange: (Int) -> Unit) {
+private fun IntField(
+    label: String,
+    value: Int,
+    range: IntRange? = null,
+    onValueChange: (Int) -> Unit,
+) {
     var text by remember(value) { mutableStateOf(value.toString()) }
+    val parsed = text.toIntOrNull()
+    val isError = range != null && (parsed == null || parsed !in range)
     OutlinedTextField(
         value = text,
         onValueChange = { s ->
             text = s
-            s.toIntOrNull()?.let { onValueChange(it) }
+            s.toIntOrNull()
+                ?.takeIf { range == null || it in range }
+                ?.let { onValueChange(it) }
         },
         label = { Text(label) },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
+        isError = isError,
+        supportingText = range?.let { r -> { Text("${r.first}–${r.last}") } },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
     )
 }

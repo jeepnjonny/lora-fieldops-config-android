@@ -514,6 +514,9 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setSmartTurnSlope(v: Int) = sendField("smartcustom turnslope $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateCustomSB { copy(turnSlope = v) }
     }
+    fun setSmartTurnMinTime(v: Int) = sendField("smartcustom turnmintime $v", debounceMs = FIELD_DEBOUNCE_MS) {
+        updateCustomSB { copy(turnMinTime = v) }
+    }
 
     // -- Display --
 

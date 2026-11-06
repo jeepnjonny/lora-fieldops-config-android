@@ -138,7 +138,27 @@ data class CustomSmartBeaconConfig(
     val fastSpeed: Int = 40,
     val turnMinDeg: Int = 12,
     val turnSlope: Int = 60,
+    // Minimum spacing (s) before a corner beacon. Null means the connected
+    // firmware predates the field (it omits the key and would reject
+    // `smartcustom turnmintime`), so the UI hides it.
+    val turnMinTime: Int? = null,
 )
+
+/**
+ * Valid ranges for the Custom SmartBeacon fields. Mirrors
+ * SMARTBEACON_CUSTOM_FIELDS in the firmware's src/smartbeacon_utils.cpp —
+ * keep in sync. The firmware rejects out-of-range CLI values, so the UI must
+ * not send them.
+ */
+object SmartBeaconLimits {
+    val SLOW_RATE     = 10..3600
+    val SLOW_SPEED    = 2..200
+    val FAST_RATE     = 5..3600
+    val FAST_SPEED    = 3..300
+    val TURN_MIN_DEG  = 1..180
+    val TURN_SLOPE    = 0..1000
+    val TURN_MIN_TIME = 5..300
+}
 
 @Serializable
 data class PttTriggerConfig(
