@@ -1,12 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- USB Host required for OTG serial access -->
     <uses-feature android:name="android.hardware.usb.host" />
 
-    <!-- Requested at runtime for the "Use This Device's Location" fixed-position button -->
+    <!-- Bluetooth LE setup link (optional: USB still works on phones without BLE) -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+    <!-- Requested at runtime for the "Use This Device's Location" fixed-position button.
+         Before Android 12, fine location is also what BLE scanning requires. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- Android 11 and older: legacy install-time Bluetooth permissions -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <!-- Android 12+: runtime permissions. Scanning only looks for trackers, never derives location. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <application
         android:allowBackup="true"

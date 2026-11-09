@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val ACTION_USB_PERMISSION = "com.kj7nye.lorafieldops.USB_PERMISSION"
 private const val READ_TIMEOUT_MS = 100
@@ -30,7 +31,7 @@ private const val BAUD_RATE = 115200
 private const val READ_BUFFER_SIZE = 4096
 
 /** Raw USB CDC-ACM transport: open/close, read bytes as SharedFlow, write bytes. */
-class SerialManager(private val context: Context) {
+class SerialManager(private val context: Context) : DeviceTransport {
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
@@ -38,11 +39,13 @@ class SerialManager(private val context: Context) {
     private var readScope: CoroutineScope? = null
     private var readJob: Job? = null
 
+    override val kind = TransportKind.USB
+
     private val _rxFlow = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
-    val rxFlow: SharedFlow<ByteArray> = _rxFlow
+    override val rxFlow: SharedFlow<ByteArray> = _rxFlow
 
     private val _connectionEvents = MutableSharedFlow<ConnectionEvent>(extraBufferCapacity = 8)
-    val connectionEvents: SharedFlow<ConnectionEvent> = _connectionEvents
+    override val connectionEvents: SharedFlow<ConnectionEvent> = _connectionEvents
 
     // ---------------------------------------------------------------------------
     // Public API
@@ -135,11 +138,11 @@ class SerialManager(private val context: Context) {
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         readScope = scope
         readJob = scope.launch { readLoop() }
-        emitEvent(ConnectionEvent.Opened(driver.device))
+        emitEvent(ConnectionEvent.Opened(driver.device.productName ?: "USB device"))
     }
 
     /** Closes the port and stops the read loop. */
-    fun close() {
+    override fun close() {
         readJob?.cancel()
         readScope?.cancel()
         readJob = null
@@ -149,11 +152,10 @@ class SerialManager(private val context: Context) {
     }
 
     /** Returns true if the port is currently open. */
-    val isOpen: Boolean get() = port != null
+    override val isOpen: Boolean get() = port != null
 
-    /** Writes [data] to the serial port. Throws IOException on failure. */
-    @Throws(Exception::class)
-    fun write(data: ByteArray) {
+    /** Writes [data] to the serial port (blocking I/O, moved off the caller's thread). Throws on failure. */
+    override suspend fun write(data: ByteArray) = withContext(Dispatchers.IO) {
         port?.write(data, WRITE_TIMEOUT_MS)
             ?: error("Serial port not open")
     }
@@ -180,10 +182,4 @@ class SerialManager(private val context: Context) {
     private fun emitEvent(event: ConnectionEvent) {
         _connectionEvents.tryEmit(event)
     }
-}
-
-sealed class ConnectionEvent {
-    data class Opened(val device: UsbDevice) : ConnectionEvent()
-    data class Error(val message: String) : ConnectionEvent()
-    data class Lost(val reason: String) : ConnectionEvent()
 }

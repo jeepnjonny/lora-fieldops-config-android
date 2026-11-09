@@ -11,6 +11,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
@@ -45,6 +46,7 @@ import com.kj7nye.lorafieldops.ui.ConnectionState
 import com.kj7nye.lorafieldops.ui.ImportExportSheet
 import com.kj7nye.lorafieldops.ui.LogScreen
 import com.kj7nye.lorafieldops.ui.StatusScreen
+import com.kj7nye.lorafieldops.serial.TransportKind
 import com.kj7nye.lorafieldops.ui.theme.AppTheme
 
 private const val ROUTE_CONNECT = "connect"
@@ -86,7 +88,7 @@ class MainActivity : ComponentActivity() {
             .getDefaultProber().findAllDrivers(usbManager)
         val driver = drivers.firstOrNull { it.device == device } ?: return
         vm.serialManager.requestPermission(device) { granted ->
-            if (granted) vm.connect(driver)
+            if (granted) vm.connectUsb(driver)
         }
     }
 }
@@ -128,6 +130,8 @@ private fun MainNavigation(vm: ConfigViewModel) {
     }
 
     val isConnected = connState is ConnectionState.Connected
+    // Log mode is USB-only on the firmware side (the BLE link carries the setup CLI only).
+    val isBleSession = (connState as? ConnectionState.Connected)?.kind == TransportKind.BLE
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackHost) },
@@ -146,12 +150,14 @@ private fun MainNavigation(vm: ConfigViewModel) {
                         icon = { Icon(Icons.Default.Info, null) },
                         label = { Text("Status") },
                     )
-                    NavigationBarItem(
-                        selected = currentRoute == ROUTE_LOG,
-                        onClick = { navController.navigate(ROUTE_LOG) { launchSingleTop = true } },
-                        icon = { Icon(Icons.Default.List, null) },
-                        label = { Text("Log") },
-                    )
+                    if (!isBleSession) {
+                        NavigationBarItem(
+                            selected = currentRoute == ROUTE_LOG,
+                            onClick = { navController.navigate(ROUTE_LOG) { launchSingleTop = true } },
+                            icon = { Icon(Icons.Default.List, null) },
+                            label = { Text("Log") },
+                        )
+                    }
                     NavigationBarItem(
                         selected = false,
                         onClick = { showImportExport = true },
@@ -161,7 +167,7 @@ private fun MainNavigation(vm: ConfigViewModel) {
                     NavigationBarItem(
                         selected = false,
                         onClick = { vm.disconnect() },
-                        icon = { Icon(Icons.Default.Usb, null) },
+                        icon = { Icon(if (isBleSession) Icons.Default.Bluetooth else Icons.Default.Usb, null) },
                         label = { Text("Disconnect") },
                     )
                 }

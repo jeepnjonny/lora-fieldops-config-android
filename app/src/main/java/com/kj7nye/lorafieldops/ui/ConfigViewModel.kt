@@ -3,7 +3,6 @@ package com.kj7nye.lorafieldops.ui
 import android.annotation.SuppressLint
 import android.app.Application
 import android.content.Context
-import android.hardware.usb.UsbDevice
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -32,10 +31,15 @@ import com.kj7nye.lorafieldops.model.TrackerConfig
 import com.kj7nye.lorafieldops.model.WifiAPConfig
 import com.kj7nye.lorafieldops.model.WifiNetworkConfig
 import com.kj7nye.lorafieldops.model.WifiSTAConfig
+import com.kj7nye.lorafieldops.serial.BleScanner
+import com.kj7nye.lorafieldops.serial.BleTrackerInfo
+import com.kj7nye.lorafieldops.serial.BleTransport
 import com.kj7nye.lorafieldops.serial.CommandResult
 import com.kj7nye.lorafieldops.serial.ConnectionEvent
+import com.kj7nye.lorafieldops.serial.DeviceTransport
 import com.kj7nye.lorafieldops.serial.ProtocolHandler
 import com.kj7nye.lorafieldops.serial.SerialManager
+import com.kj7nye.lorafieldops.serial.TransportKind
 import com.kj7nye.lorafieldops.serial.WIFI_SCAN_TIMEOUT_MS
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
@@ -56,10 +60,16 @@ private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 // per character, each serialized through the command queue.
 private const val FIELD_DEBOUNCE_MS = 500L
 
+/** BLE replies arrive as many small notifications; stretch every protocol timeout by this much. */
+private const val BLE_TIMEOUT_SCALE = 3L
+
+/** Firmware note printed on setup entry when a dropped session left unsaved edits in RAM. */
+private const val INTERRUPTED_SESSION_NOTE = "unsaved edits from an interrupted session"
+
 sealed class ConnectionState {
     object Disconnected : ConnectionState()
-    object Connecting : ConnectionState()
-    data class Connected(val device: UsbDevice) : ConnectionState()
+    data class Connecting(val message: String = "Entering setup mode…") : ConnectionState()
+    data class Connected(val label: String, val kind: TransportKind) : ConnectionState()
     data class Error(val message: String) : ConnectionState()
 }
 
@@ -72,7 +82,10 @@ data class WifiScanResult(val ssid: String, val rssi: Int, val secure: Boolean)
 class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     val serialManager = SerialManager(app)
+    val bleScanner = BleScanner(app)
     private var protocol: ProtocolHandler? = null
+    /** Link carrying the current session: [serialManager] or a [BleTransport]. */
+    private var transport: DeviceTransport? = null
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -131,10 +144,35 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     // Connection lifecycle
     // -------------------------------------------------------------------------
 
-    fun connect(driver: UsbSerialDriver) {
-        _connectionState.value = ConnectionState.Connecting
+    /** Opens a setup session over USB serial. Caller has already obtained USB permission. */
+    fun connectUsb(driver: UsbSerialDriver) {
+        startSession(serialManager) { serialManager.open(driver) }
+    }
 
-        val proto = ProtocolHandler(serialManager, serialManager.rxFlow)
+    /**
+     * Opens a setup session over the tracker's BLE configuration link. Caller has
+     * already obtained the Bluetooth runtime permissions. Pairing (PIN entry) happens
+     * inside [BleTransport]'s open sequence.
+     */
+    fun connectBle(tracker: BleTrackerInfo) {
+        bleScanner.stop()   // scanning slows down connection setup on many phones
+        val ble = BleTransport(getApplication(), tracker.device, tracker.name)
+        startSession(ble) { ble.open() }
+    }
+
+    /**
+     * Common session start for every transport: wires the protocol handler, connection
+     * events and live log tap to [link], then calls [open] to start it.
+     */
+    private fun startSession(link: DeviceTransport, open: () -> Unit) {
+        _connectionState.value = ConnectionState.Connecting()
+        clearDeviceReadings()
+        transport = link
+
+        val proto = ProtocolHandler(
+            link, link.rxFlow,
+            timeoutScale = if (link.kind == TransportKind.BLE) BLE_TIMEOUT_SCALE else 1L,
+        )
         protocol = proto
 
         // Start collecting events BEFORE open() so the Opened event isn't dropped.
@@ -145,21 +183,26 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         // a Lost event that would overwrite the Disconnected state we already set.
         connectionEventJob?.cancel()
         connectionEventJob = viewModelScope.launch {
-            serialManager.connectionEvents.collect { event ->
+            link.connectionEvents.collect { event ->
                 when (event) {
+                    is ConnectionEvent.Progress -> {
+                        _connectionState.value = ConnectionState.Connecting(event.message)
+                    }
                     is ConnectionEvent.Opened -> {
-                        _connectionState.value = ConnectionState.Connected(event.device)
-                        enterSetupAndLoad(proto)
+                        _connectionState.value = ConnectionState.Connected(event.label, link.kind)
+                        enterSetupAndLoad(proto, link.kind)
                     }
                     is ConnectionEvent.Error -> {
                         _connectionState.value = ConnectionState.Error(event.message)
                         proto.close()
                         protocol = null
+                        releaseBleTransport(link)
                     }
                     is ConnectionEvent.Lost -> {
                         _connectionState.value = ConnectionState.Error("Disconnected: ${event.reason}")
                         proto.close()
                         protocol = null
+                        releaseBleTransport(link)
                         snack("Device disconnected — reconnect to continue")
                     }
                 }
@@ -171,7 +214,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         logCollectorJob?.cancel()
         logCollectorJob = viewModelScope.launch {
             val lineBuf = StringBuilder()
-            serialManager.rxFlow.collect { bytes ->
+            link.rxFlow.collect { bytes ->
                 lineBuf.append(bytes.toString(Charsets.UTF_8))
                 val raw = lineBuf.toString()
                 val lastNl = raw.lastIndexOf('\n')
@@ -197,7 +240,17 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
-        serialManager.open(driver)
+        open()
+    }
+
+    /**
+     * A BLE transport is single-use: close it once its link has failed so its GATT
+     * client and coroutines are released. (The USB port keeps its existing behavior.)
+     */
+    private fun releaseBleTransport(link: DeviceTransport) {
+        if (link.kind != TransportKind.BLE) return
+        link.close()
+        if (transport === link) transport = null
     }
 
     fun disconnect() {
@@ -211,25 +264,59 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         fieldDebounceJobs.clear()
         protocol?.close()
         protocol = null
-        serialManager.close()
+        transport?.close()
+        transport = null
+        serialManager.close()   // no-op unless it was the active transport
         _connectionState.value = ConnectionState.Disconnected
         _config.value = null
         _dirty.value = false
+        clearDeviceReadings()
+    }
+
+    /**
+     * Forgets everything read from the previous tracker (status values, firmware
+     * version, WiFi scan results) so nothing from one device is shown while talking
+     * to another. Called on disconnect and again at session start, which also covers
+     * a link that dropped rather than being disconnected.
+     */
+    private fun clearDeviceReadings() {
         _firmwareVersion.value = null
+        _statusLines.value = emptyMap()
+        _wifiScanResults.value = emptyList()
+        _wifiScanning.value = false
     }
 
     fun clearLog() { logBuffer.clear(); _logLines.value = emptyList() }
 
     override fun onCleared() {
         stopLocationFetch()
+        bleScanner.stop()
+        transport?.close()
         super.onCleared()
     }
 
-    private suspend fun enterSetupAndLoad(proto: ProtocolHandler) {
+    private suspend fun enterSetupAndLoad(proto: ProtocolHandler, kind: TransportKind) {
         when (val r = proto.enterSetupMode()) {
-            is CommandResult.Timeout -> snack("Setup mode entry timed out — check baud rate")
+            is CommandResult.Timeout -> snack(
+                if (kind == TransportKind.BLE)
+                    "Tracker didn't answer over Bluetooth. If its PIN changed or it was reflashed, " +
+                    "forget it in Android Bluetooth settings and reconnect."
+                else
+                    "Setup mode entry timed out — check baud rate"
+            )
             is CommandResult.Err     -> snack("Setup entry failed: ${r.message}")
-            is CommandResult.Ok      -> { loadConfig(proto); readFirmwareVersion() }
+            is CommandResult.Ok      -> {
+                loadConfig(proto)
+                // A session that dropped mid-edit (e.g. Bluetooth out of range) leaves its
+                // edits applied in the tracker's RAM but unsaved. The editor shows the saved
+                // config, so surface the Save/Discard bar rather than let a later Save
+                // silently persist edits the user can't see.
+                if (r.text.contains(INTERRUPTED_SESSION_NOTE)) {
+                    _dirty.value = true
+                    snack("The tracker has unsaved edits from an interrupted session — Save or Discard them")
+                }
+                readFirmwareVersion()
+            }
         }
     }
 
@@ -262,7 +349,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun discard() = viewModelScope.launch {
-        val result = protocol?.sendCommand("discard") ?: return@launch
+        // With unsaved edits the tracker reboots instead of printing a prompt.
+        val result = protocol?.sendCommand("discard", completeOn = "rebooting to reload config") ?: return@launch
         when (result) {
             is CommandResult.Ok -> { snack("Discarded — device rebooting"); _dirty.value = false }
             is CommandResult.Err -> snack("Discard failed: ${result.message}")
@@ -271,7 +359,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun reboot() = viewModelScope.launch {
-        protocol?.sendCommand("reboot")
+        // The tracker resets right after this line, so there is never a prompt to wait for.
+        protocol?.sendCommand("reboot", completeOn = "Rebooting...")
         snack("Rebooting…")
         disconnect()
     }
@@ -322,31 +411,38 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Firmware: `gps.lat=… gps.lon=… gps.alt=… gps.sats=… gps.valid=0|1`. */
     fun readGps() = viewModelScope.launch {
         val r = protocol?.sendCommand("gps read") ?: return@launch
-        if (r is CommandResult.Ok) {
-            val lines = _statusLines.value.toMutableMap()
-            lines["gps"] = r.text
-            _statusLines.value = lines
-        }
+        if (r is CommandResult.Ok) replaceStatusGroup("gps.", parseStatusTokens(r.text))
     }
 
+    /**
+     * Firmware: `aprsIS.connected=true host=… port=… [server=…]` or `aprsIS.connected=false`.
+     * Older firmware sends only the connected flag; the extra keys are then simply absent.
+     */
     fun readAprsIsStatus() = viewModelScope.launch {
         val r = protocol?.sendCommand("aprsiss status") ?: return@launch
         if (r is CommandResult.Ok) {
-            val lines = _statusLines.value.toMutableMap()
-            lines["aprsIS.connected"] = if (r.text.contains("true")) "true" else "false"
-            _statusLines.value = lines
+            replaceStatusGroup("aprsIS.", prefixKeys("aprsIS.", parseStatusTokens(r.text)))
         }
     }
 
+    /** Firmware: `wifiSTA.connected=true ip=… ssid=<rest of line>` or `wifiSTA.connected=false`. */
     fun readWifiStaStatus() = viewModelScope.launch {
         val r = protocol?.sendCommand("wifista status") ?: return@launch
         if (r is CommandResult.Ok) {
-            val lines = _statusLines.value.toMutableMap()
-            lines["wifiSTA.connected"] = if (r.text.contains("true")) "true" else "false"
-            _statusLines.value = lines
+            replaceStatusGroup("wifiSTA.", prefixKeys("wifiSTA.", parseStatusTokens(r.text, restOfLineKey = "ssid")))
         }
+    }
+
+    /**
+     * Replaces every status entry whose key starts with [prefix] with [fresh], so a
+     * value from an earlier reading (e.g. the SSID of a network since dropped) can't
+     * linger next to a newer "connected=false".
+     */
+    private fun replaceStatusGroup(prefix: String, fresh: Map<String, String>) {
+        _statusLines.value = _statusLines.value.filterKeys { !it.startsWith(prefix) } + fresh
     }
 
     /**
@@ -441,28 +537,28 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- Beacon --
 
-    fun setCallsign(v: String) = sendField("beacon callsign $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setCallsign(v: String) = sendRequiredField("beacon callsign", v, debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(callsign = v.uppercase().trim()) }
     }
-    fun setSymbol(v: String) = sendField("beacon symbol $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setSymbol(v: String) = sendRequiredField("beacon symbol", v, debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(symbol = v) }
     }
-    fun setOverlay(v: String) = sendField("beacon overlay $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setOverlay(v: String) = sendRequiredField("beacon overlay", v, debounceMs = FIELD_DEBOUNCE_MS) {
         updateBeacon { copy(overlay = v) }
     }
     fun setMicE(v: String) = sendField("beacon mice $v") {
         updateBeacon { copy(micE = v) }
     }
-    fun setComment(v: String) = sendField("beacon comment $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setComment(v: String) = sendField("beacon comment $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "beacon comment") {
         updateBeacon { copy(comment = v) }
     }
-    fun setStatus(v: String) = sendField("beacon status $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setStatus(v: String) = sendField("beacon status $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "beacon status") {
         updateBeacon { copy(status = v) }
     }
-    fun setTacticalCallsign(v: String) = sendField("beacon tactical $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setTacticalCallsign(v: String) = sendField("beacon tactical $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "beacon tactical") {
         updateBeacon { copy(tacticalCallsign = v.take(9)) }
     }
-    fun setProfileLabel(v: String) = sendField("beacon label $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setProfileLabel(v: String) = sendField("beacon label $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "beacon label") {
         updateBeacon { copy(profileLabel = v) }
     }
     fun setSmartBeaconActive(v: Boolean) = sendField("beacon smart ${v.onOff}") {
@@ -541,7 +637,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setBtActive(v: Boolean) = sendField("bt ${v.onOff}") {
         updateBt { copy(active = v) }
     }
-    fun setBtName(v: String) = sendField("bt name $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setBtName(v: String) = sendField("bt name $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "bt name") {
         updateBt { copy(deviceName = v) }
     }
     fun setBtPinEnabled(v: Boolean) = sendField("bt pin ${v.onOff}") {
@@ -608,7 +704,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setRemoteCfgEnabled(v: Boolean) = sendField("remotecfg ${v.onOff}") {
         updateRemoteCfg { copy(enabled = v) }
     }
-    fun setRemoteCfgToken(v: String) = sendField("remotecfg token $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setRemoteCfgToken(v: String) = sendField("remotecfg token $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "remotecfg token") {
         updateRemoteCfg { copy(token = v) }
     }
     fun setRemoteCfgWindow(v: Int) = sendField("remotecfg window $v", debounceMs = FIELD_DEBOUNCE_MS) {
@@ -617,7 +713,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- WiFi AP --
 
-    fun setWifiApPassword(v: String) = sendField("wifi password $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setWifiApPassword(v: String) = sendField("wifi password $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "wifi password") {
         update { copy(wifiAP = WifiAPConfig(password = v)) }
     }
 
@@ -637,25 +733,27 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun removeWifiStaNetwork(i: Int) = sendField("wifista remove $i") {
         updateWifiSta { copy(networks = networks.filterIndexed { idx, _ -> idx != i }) }
     }
-    fun setWifiStaSsid(i: Int, v: String) = sendField("wifista ssid $i $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setWifiStaSsid(i: Int, v: String) = sendRequiredField("wifista ssid $i", v, debounceMs = FIELD_DEBOUNCE_MS) {
         updateWifiSta { copy(networks = networks.mapIndexed { idx, n -> if (idx == i) n.copy(ssid = v) else n }) }
     }
-    fun setWifiStaPassword(i: Int, v: String) = sendField("wifista password $i $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setWifiStaPassword(i: Int, v: String) = sendField("wifista password $i $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "wifista password $i") {
         updateWifiSta { copy(networks = networks.mapIndexed { idx, n -> if (idx == i) n.copy(password = v) else n }) }
     }
 
     // -- APRS-IS --
 
-    fun setAprsIsServer(v: String) = sendField("aprsiss server $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setAprsIsServer(v: String) = sendRequiredField("aprsiss server", v, debounceMs = FIELD_DEBOUNCE_MS) {
         updateAprsIs { copy(server = v) }
     }
     fun setAprsIsPort(v: Int) = sendField("aprsiss port $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateAprsIs { copy(port = v) }
     }
-    fun setAprsIsPasscode(v: String) = sendField("aprsiss passcode $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    // Blank is meaningful for both (passcode: auto-compute from callsign; filter: none),
+    // so unlike the required fields these send an empty value to clear the setting.
+    fun setAprsIsPasscode(v: String) = sendField("aprsiss passcode $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "aprsiss passcode") {
         updateAprsIs { copy(passcode = v) }
     }
-    fun setAprsIsFilter(v: String) = sendField("aprsiss filter $v", debounceMs = FIELD_DEBOUNCE_MS) {
+    fun setAprsIsFilter(v: String) = sendField("aprsiss filter $v", debounceMs = FIELD_DEBOUNCE_MS, fieldKey = "aprsiss filter") {
         updateAprsIs { copy(filter = v) }
     }
     fun setAprsIsDownlink(v: Boolean) = sendField("aprsiss downlink ${v.onOff}") {
@@ -790,11 +888,43 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      * and the local config is re-synced from the device so the UI doesn't keep showing
      * a value the device never actually accepted.
      */
-    private fun sendField(cmd: String, debounceMs: Long = 0L, localUpdate: TrackerConfig.() -> Unit) {
+    /**
+     * For fields the firmware insists on a value for: it answers an empty one with
+     * "ERR" (e.g. "symbol must be 1 char"). An empty box is just the moment between
+     * deleting the old value and typing the new one, so it stays a local edit: nothing
+     * is sent, and any still-pending send of the previous value is cancelled so the
+     * tracker doesn't receive a value the user has already deleted. [cmdPrefix] is the
+     * command without its value, e.g. "beacon symbol".
+     */
+    private fun sendRequiredField(
+        cmdPrefix: String,
+        value: String,
+        debounceMs: Long = 0L,
+        localUpdate: TrackerConfig.() -> Unit,
+    ) {
+        if (value.isNotBlank()) {
+            sendField("$cmdPrefix $value", debounceMs, fieldKey = cmdPrefix, localUpdate = localUpdate)
+            return
+        }
+        _config.value?.localUpdate() ?: return
+        fieldDebounceJobs.remove(cmdPrefix)?.cancel()
+    }
+
+    /**
+     * [fieldKey] identifies the field for debouncing and error display. The default
+     * (command minus its last word) is only right for single-word values; callers whose
+     * value can contain spaces (SSIDs, filters) pass the command prefix explicitly, or
+     * every keystroke would get its own key and its own send.
+     */
+    private fun sendField(
+        cmd: String,
+        debounceMs: Long = 0L,
+        fieldKey: String = cmd.substringBeforeLast(" "),
+        localUpdate: TrackerConfig.() -> Unit,
+    ) {
         _config.value?.localUpdate() ?: return
         _dirty.value = true
 
-        val fieldKey = cmd.substringBeforeLast(" ")
         fieldDebounceJobs.remove(fieldKey)?.cancel()
 
         if (debounceMs <= 0L) {
@@ -885,3 +1015,31 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 }
 
 private val Boolean.onOff get() = if (this) "on" else "off"
+
+/**
+ * Parses the firmware's `key=value key=value` status lines. A value runs to the next
+ * space, except for [restOfLineKey], which the firmware prints last precisely so it
+ * can contain spaces (SSIDs): its value is everything after the `=` to end of line.
+ */
+internal fun parseStatusTokens(text: String, restOfLineKey: String? = null): Map<String, String> {
+    val result = mutableMapOf<String, String>()
+    for (line in text.lines()) {
+        var rest = line.trim()
+        if (restOfLineKey != null) {
+            val marker = Regex("""(?:^|\s)${Regex.escape(restOfLineKey)}=""").find(rest)
+            if (marker != null) {
+                result[restOfLineKey] = rest.substring(marker.range.last + 1).trim()
+                rest = rest.substring(0, marker.range.first)
+            }
+        }
+        rest.split(' ').forEach { token ->
+            val eq = token.indexOf('=')
+            if (eq > 0) result[token.substring(0, eq)] = token.substring(eq + 1)
+        }
+    }
+    return result
+}
+
+/** Puts [prefix] on keys that don't already carry it (`ip` → `wifiSTA.ip`). */
+private fun prefixKeys(prefix: String, map: Map<String, String>): Map<String, String> =
+    map.mapKeys { (k, _) -> if (k.startsWith(prefix)) k else prefix + k }

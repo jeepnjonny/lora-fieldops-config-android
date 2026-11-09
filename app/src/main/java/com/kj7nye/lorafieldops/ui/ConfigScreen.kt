@@ -187,10 +187,10 @@ fun ConfigScreen(vm: ConfigViewModel) {
                     vm.setCallsign(it)
                 }
                 LabeledTextField("Symbol (1 char)", c.beacons[0].symbol) {
-                    if (it.length <= 1) vm.setSymbol(it)
+                    singleCharEdit(c.beacons[0].symbol, it)?.let(vm::setSymbol)
                 }
                 LabeledTextField("Overlay (1 char)", c.beacons[0].overlay) {
-                    if (it.length <= 1) vm.setOverlay(it)
+                    singleCharEdit(c.beacons[0].overlay, it)?.let(vm::setOverlay)
                 }
                 DropdownField("Mic-E", MIC_E_OPTIONS, c.beacons[0].micE) { vm.setMicE(it) }
                 LabeledTextField("Comment", c.beacons[0].comment) { vm.setComment(it) }
@@ -422,7 +422,7 @@ fun ConfigScreen(vm: ConfigViewModel) {
                 val a = c.aprsIS
                 LabeledTextField("Server", a.server) { vm.setAprsIsServer(it) }
                 IntField("Port", a.port) { vm.setAprsIsPort(it) }
-                LabeledTextField("Passcode", a.passcode) { vm.setAprsIsPasscode(it) }
+                LabeledTextField("Passcode (blank = auto from callsign)", a.passcode) { vm.setAprsIsPasscode(it) }
                 LabeledTextField("Filter", a.filter) { vm.setAprsIsFilter(it) }
                 if (supportsAprsIsDownlink) {
                     SwitchRow("Downlink to RF", a.downlinkEnabled) { vm.setAprsIsDownlink(it) }
@@ -618,7 +618,20 @@ private fun LabeledTextField(label: String, value: String, onValueChange: (Strin
     )
 }
 
-private val BLE_PIN_REGEX = Regex("[0-9]{4,6}")   // used with matches(), i.e. full-string match
+/**
+ * Edit rule for a one-character field. Typing into a field that already holds a
+ * character yields two characters; keep the newly typed one so the user can replace
+ * the value directly instead of having to delete it first. Returns null to ignore
+ * the edit (e.g. a multi-character paste).
+ */
+private fun singleCharEdit(current: String, input: String): String? = when {
+    input.length <= 1 -> input
+    input.length == 2 && current.length == 1 ->
+        if (input[0].toString() == current) input.substring(1) else input.substring(0, 1)
+    else -> null
+}
+
+private val BLE_PIN_REGEX =Regex("[0-9]{4,6}")   // used with matches(), i.e. full-string match
 
 /**
  * BLE pairing PIN editor. Only digits are accepted, and only a complete 4-6 digit
