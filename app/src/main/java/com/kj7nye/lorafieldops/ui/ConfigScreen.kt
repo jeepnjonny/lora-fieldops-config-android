@@ -292,6 +292,18 @@ fun ConfigScreen(vm: ConfigViewModel) {
                         "forget the tracker in your phone's Bluetooth settings and pair again.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                // Only firmware that has the option reports a "kiss" block.
+                c.kiss?.let { k ->
+                    SwitchRow("Send RSSI/SNR with received packets", k.rssi) { vm.setKissRssi(it) }
+                    Text(
+                        "Adds the signal strength of each heard packet to the KISS output (Bluetooth, " +
+                            "USB and TCP), for the coverage logger. Tracker role only. Some KISS apps " +
+                            "show the extra frames, so leave it off unless you log coverage.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (k.rssi && c.deviceRole != DeviceRole.TRACKER)
+                            MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             Section("Battery") {

@@ -10,6 +10,7 @@ import android.os.Looper
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.hoho.android.usbserial.driver.UsbSerialDriver
+import com.kj7nye.lorafieldops.logger.CoverageLogger
 import com.kj7nye.lorafieldops.model.AprsIsConfig
 import com.kj7nye.lorafieldops.model.BatteryConfig
 import com.kj7nye.lorafieldops.model.BeaconConfig
@@ -21,6 +22,7 @@ import com.kj7nye.lorafieldops.model.DisplayConfig
 import com.kj7nye.lorafieldops.model.FirmwareVersion
 import com.kj7nye.lorafieldops.model.FixedPositionConfig
 import com.kj7nye.lorafieldops.model.GpsSource
+import com.kj7nye.lorafieldops.model.KissConfig
 import com.kj7nye.lorafieldops.model.LoraConfig
 import com.kj7nye.lorafieldops.model.OtherConfig
 import com.kj7nye.lorafieldops.model.PhgConfig
@@ -31,6 +33,7 @@ import com.kj7nye.lorafieldops.model.TrackerConfig
 import com.kj7nye.lorafieldops.model.WifiAPConfig
 import com.kj7nye.lorafieldops.model.WifiNetworkConfig
 import com.kj7nye.lorafieldops.model.WifiSTAConfig
+import com.kj7nye.lorafieldops.model.settingChangeNotes
 import com.kj7nye.lorafieldops.serial.BleScanner
 import com.kj7nye.lorafieldops.serial.BleTrackerInfo
 import com.kj7nye.lorafieldops.serial.BleTransport
@@ -48,6 +51,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
@@ -62,6 +66,10 @@ private const val FIELD_DEBOUNCE_MS = 500L
 
 /** BLE replies arrive as many small notifications; stretch every protocol timeout by this much. */
 private const val BLE_TIMEOUT_SCALE = 3L
+
+/** Coverage logger auto-reconnect: first retry after this long, doubling up to the max. */
+private const val LOGGER_RECONNECT_FIRST_MS = 5_000L
+private const val LOGGER_RECONNECT_MAX_MS   = 60_000L
 
 /** Firmware note printed on setup entry when a dropped session left unsaved edits in RAM. */
 private const val INTERRUPTED_SESSION_NOTE = "unsaved edits from an interrupted session"
@@ -84,6 +92,13 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     val serialManager = SerialManager(app)
     val bleScanner = BleScanner(app)
     private var protocol: ProtocolHandler? = null
+    /** Optional coverage logger; does nothing unless the user switched it on. */
+    val coverageLogger = CoverageLogger.get(app)
+    /** Last tracker connected over BLE, for the logger's automatic reconnect. */
+    private var lastBleTracker: BleTrackerInfo? = null
+    private var reconnectJob: Job? = null
+    /** Config as last loaded from / saved to flash; the "before" side of setting-change notes. */
+    private var savedConfig: TrackerConfig? = null
     /** Link carrying the current session: [serialManager] or a [BleTransport]. */
     private var transport: DeviceTransport? = null
 
@@ -146,6 +161,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Opens a setup session over USB serial. Caller has already obtained USB permission. */
     fun connectUsb(driver: UsbSerialDriver) {
+        cancelLoggerReconnect()
         startSession(serialManager) { serialManager.open(driver) }
     }
 
@@ -155,6 +171,12 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      * inside [BleTransport]'s open sequence.
      */
     fun connectBle(tracker: BleTrackerInfo) {
+        cancelLoggerReconnect()
+        openBle(tracker)
+    }
+
+    private fun openBle(tracker: BleTrackerInfo) {
+        lastBleTracker = tracker
         bleScanner.stop()   // scanning slows down connection setup on many phones
         val ble = BleTransport(getApplication(), tracker.device, tracker.name)
         startSession(ble) { ble.open() }
@@ -190,20 +212,29 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     is ConnectionEvent.Opened -> {
                         _connectionState.value = ConnectionState.Connected(event.label, link.kind)
+                        if (link is BleTransport) coverageLogger.attach(link)
                         enterSetupAndLoad(proto, link.kind)
                     }
                     is ConnectionEvent.Error -> {
                         _connectionState.value = ConnectionState.Error(event.message)
                         proto.close()
                         protocol = null
+                        if (link is BleTransport) coverageLogger.detach(reconnecting = reconnectJob?.isActive == true)
                         releaseBleTransport(link)
                     }
                     is ConnectionEvent.Lost -> {
                         _connectionState.value = ConnectionState.Error("Disconnected: ${event.reason}")
                         proto.close()
                         protocol = null
+                        val autoReconnect = link is BleTransport && coverageLogger.isEnabled
+                        if (link is BleTransport) coverageLogger.detach(reconnecting = autoReconnect)
                         releaseBleTransport(link)
-                        snack("Device disconnected — reconnect to continue")
+                        if (autoReconnect) {
+                            snack("Tracker disconnected — reconnecting for the coverage logger")
+                            scheduleLoggerReconnect()
+                        } else {
+                            snack("Device disconnected — reconnect to continue")
+                        }
                     }
                 }
             }
@@ -253,7 +284,42 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         if (transport === link) transport = null
     }
 
+    /**
+     * Coverage logger only: when a logging BLE link drops (out of range on a drive), keep
+     * trying to reconnect to the same tracker so logging resumes by itself. Stops as soon
+     * as the user connects or disconnects, or switches the logger off. The tracker is
+     * already paired, so no PIN prompt appears.
+     */
+    private fun scheduleLoggerReconnect() {
+        val tracker = lastBleTracker ?: return
+        reconnectJob?.cancel()
+        coverageLogger.setReconnecting(true)
+        reconnectJob = viewModelScope.launch {
+            var wait = LOGGER_RECONNECT_FIRST_MS
+            try {
+                while (true) {
+                    delay(wait)
+                    if (!coverageLogger.isEnabled || _connectionState.value !is ConnectionState.Error) break
+                    openBle(tracker)
+                    val outcome = _connectionState.first { it !is ConnectionState.Connecting }
+                    if (outcome !is ConnectionState.Error) break
+                    wait = (wait * 2).coerceAtMost(LOGGER_RECONNECT_MAX_MS)
+                }
+            } finally {
+                if (_connectionState.value !is ConnectionState.Connected) coverageLogger.setReconnecting(false)
+            }
+        }
+    }
+
+    private fun cancelLoggerReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        coverageLogger.setReconnecting(false)
+    }
+
     fun disconnect() {
+        cancelLoggerReconnect()
+        coverageLogger.detach()
         // Cancel the event collector FIRST so the Lost event emitted when the port
         // closes cannot overwrite the Disconnected state we're about to set.
         connectionEventJob?.cancel()
@@ -289,6 +355,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun clearLog() { logBuffer.clear(); _logLines.value = emptyList() }
 
     override fun onCleared() {
+        reconnectJob?.cancel()
+        coverageLogger.detach()
         stopLocationFetch()
         bleScanner.stop()
         transport?.close()
@@ -324,8 +392,11 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         when (val r = proto.exportConfig()) {
             is CommandResult.Ok -> {
                 try {
-                    _config.value = json.decodeFromString(TrackerConfig.serializer(), r.text)
+                    val cfg = json.decodeFromString(TrackerConfig.serializer(), r.text)
+                    _config.value = cfg
+                    savedConfig = cfg
                     _dirty.value = false
+                    cfg.beacons.firstOrNull()?.callsign?.let { coverageLogger.suggestDevice(it) }
                 } catch (e: Exception) {
                     snack("Config parse failed: ${e.message}")
                 }
@@ -342,7 +413,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun save() = viewModelScope.launch {
         val result = protocol?.sendCommand("save") ?: return@launch
         when (result) {
-            is CommandResult.Ok -> { _dirty.value = false; snack("Config saved") }
+            is CommandResult.Ok -> { _dirty.value = false; snack("Config saved"); recordSettingNotes() }
             is CommandResult.Err -> snack("Save failed: ${result.message}")
             CommandResult.Timeout -> snack("Save timed out")
         }
@@ -363,6 +434,19 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         protocol?.sendCommand("reboot", completeOn = "Rebooting...")
         snack("Rebooting…")
         disconnect()
+    }
+
+    /**
+     * Coverage logger "Record setting changes as device notes": one event per setting
+     * that differs from the last saved config. [settingChangeNotes] leaves secrets out.
+     */
+    private fun recordSettingNotes() {
+        val after = _config.value ?: return
+        val before = savedConfig
+        savedConfig = after
+        if (before == null) return
+        val callsign = after.beacons.firstOrNull()?.callsign ?: return
+        settingChangeNotes(before, after).forEach { coverageLogger.recordEvent(callsign, it) }
     }
 
     // -------------------------------------------------------------------------
@@ -646,6 +730,12 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     /** Caller must pass a valid 4-6 digit PIN; the firmware rejects anything else. */
     fun setBtPin(v: String) = sendField("bt pin $v", debounceMs = FIELD_DEBOUNCE_MS) {
         updateBt { copy(pin = v) }
+    }
+
+    // -- KISS output --
+
+    fun setKissRssi(v: Boolean) = sendField("kiss rssi ${v.onOff}") {
+        update { copy(kiss = (kiss ?: KissConfig()).copy(rssi = v)) }
     }
 
     // -- Battery --

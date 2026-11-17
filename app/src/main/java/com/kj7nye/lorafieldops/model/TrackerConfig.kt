@@ -28,6 +28,15 @@ data class TrackerConfig(
     val pttTrigger: PttTriggerConfig = PttTriggerConfig(),
     val phg: PhgConfig = PhgConfig(),
     val remoteCfg: RemoteCfgConfig = RemoteCfgConfig(),
+    /** Absent (null) on firmware without KISS output options; the UI hides the setting then. */
+    val kiss: KissConfig? = null,
+)
+
+/** Options for the KISS output shared by every KISS link (USB, BLE, BT Classic, TCP). */
+@Serializable
+data class KissConfig(
+    /** Follow each received packet with a SetHardware frame carrying its RSSI/SNR. Tracker role only. */
+    val rssi: Boolean = false,
 )
 
 @Serializable

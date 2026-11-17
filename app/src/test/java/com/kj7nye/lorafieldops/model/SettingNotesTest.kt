@@ -1,0 +1,46 @@
+package com.kj7nye.lorafieldops.model
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class SettingNotesTest {
+
+    @Test
+    fun describesChangedSettingWithUnit() {
+        val before = TrackerConfig()
+        val after = before.copy(other = before.other.copy(nonSmartBeaconRateSec = 60))
+        assertEquals(listOf("beacon rate 900 → 60 s"), settingChangeNotes(before, after))
+    }
+
+    @Test
+    fun kissBlockOptionalInFirmwareJson() {
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true }
+        assertEquals(null, json.decodeFromString(TrackerConfig.serializer(), "{}").kiss)
+        assertEquals(true, json.decodeFromString(TrackerConfig.serializer(), """{"kiss":{"rssi":true}}""").kiss?.rssi)
+        val before = TrackerConfig(kiss = KissConfig(rssi = false))
+        assertEquals(listOf("RSSI/SNR reports false → true"), settingChangeNotes(before, before.copy(kiss = KissConfig(rssi = true))))
+    }
+
+    @Test
+    fun noChangesNoNotes() {
+        assertTrue(settingChangeNotes(TrackerConfig(), TrackerConfig()).isEmpty())
+    }
+
+    @Test
+    fun secretsNeverAppear() {
+        val before = TrackerConfig()
+        val after = before.copy(
+            wifiAP = WifiAPConfig(password = "hunter2hunter2"),
+            wifiSTA = WifiSTAConfig(networks = listOf(WifiNetworkConfig(ssid = "Home", password = "wifikey123"))),
+            bluetooth = before.bluetooth.copy(pin = "654321"),
+            aprsIS = before.aprsIS.copy(passcode = "12345"),
+            remoteCfg = before.remoteCfg.copy(token = "unlocktoken"),
+        )
+        val notes = settingChangeNotes(before, after).joinToString("\n")
+        listOf("hunter2hunter2", "wifikey123", "654321", "12345", "unlocktoken").forEach {
+            assertTrue("leaked $it in: $notes", !notes.contains(it))
+        }
+        assertTrue("non-secret SSID change is still noted", notes.contains("Home"))
+    }
+}

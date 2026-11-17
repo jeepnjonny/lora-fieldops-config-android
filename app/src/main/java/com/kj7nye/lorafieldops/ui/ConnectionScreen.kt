@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -44,9 +45,11 @@ import com.kj7nye.lorafieldops.serial.requiredBlePermissions
 @Composable
 fun ConnectionScreen(
     vm: ConfigViewModel,
+    onOpenLogger: () -> Unit,
     onConnected: () -> Unit,
 ) {
     val state by vm.connectionState.collectAsState()
+    val loggerRuntime by vm.coverageLogger.runtime.collectAsState()
     var devices by remember { mutableStateOf<List<UsbSerialDriver>>(emptyList()) }
 
     // Refresh device list whenever screen is shown or connection state changes
@@ -97,6 +100,19 @@ fun ConnectionScreen(
                     }
                     Spacer(Modifier.height(16.dp))
                 }
+                if (loggerRuntime.reconnecting) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "Coverage logger: reconnecting to the tracker automatically…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedButton(onClick = { vm.disconnect() }) { Text("Stop") }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
                 UsbSection(
                     devices = devices,
                     onRefresh = { devices = vm.serialManager.findDevices() },
@@ -106,6 +122,10 @@ fun ConnectionScreen(
                 HorizontalDivider()
                 Spacer(Modifier.height(24.dp))
                 BluetoothSection(vm)
+                Spacer(Modifier.height(24.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                TextButton(onClick = onOpenLogger) { Text("Coverage logger settings") }
             }
         }
     }
