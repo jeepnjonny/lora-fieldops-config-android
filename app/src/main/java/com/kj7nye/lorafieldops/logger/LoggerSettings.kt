@@ -16,7 +16,11 @@ data class LoggerSettings(
     val enabled: Boolean = false,
     val baseUrl: String = DEFAULT_COVERAGE_BASE_URL,
     val apiKey: String = "",
-    /** "K7ABC-9", or "SENDER:OBJECT" for an object tracker. Free text by design. */
+    /**
+     * Device override: "K7ABC-9", or "SENDER:OBJECT" for an object tracker. Free text by
+     * design. Blank (the default) means the connected tracker's own: its callsign,
+     * or "CALLSIGN:TACTICAL" in object mode (see [trackerDevice]).
+     */
     val device: String = "",
     val uploadTx: Boolean = true,
     val uploadRx: Boolean = true,

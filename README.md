@@ -16,8 +16,9 @@ configuring a tracker. While it is off, the app sends nothing anywhere.
 1. On the website, open the Account tab, then Upload keys, and create a key (it starts with `acv_`).
    Register the tracker as one of your devices.
 2. In the app: connect screen → *Coverage logger settings* (or the *Logger* tab while
-   connected over Bluetooth). Turn it on, enter the key and check the device callsign.
-   The callsign is prefilled from the tracker. For an object tracker, enter `SENDER:OBJECT`.
+   connected over Bluetooth). Turn it on and enter the key. Leave the device callsign
+   blank to use the connected tracker's own: its callsign, or `CALLSIGN:TACTICAL` when a
+   tactical callsign is set (the tracker then beacons as an object). Type one to override it.
 3. Connect to the tracker over Bluetooth. Logging starts automatically.
 
 **How it works**

@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.kj7nye.lorafieldops.logger.trackerDevice
 import java.text.DateFormat
 import java.util.Date
 
@@ -61,10 +62,10 @@ fun CoverageLoggerScreen(
     val runtime by vm.runtime.collectAsState()
     val queued by vm.queued.collectAsState()
     val uploading by vm.uploading.collectAsState()
+    val tracker by vm.tracker.collectAsState()
 
     // Text fields are edited locally and applied with Save, so a half-typed key or
-    // callsign never reaches the logger. Re-seeded when the stored value changes
-    // (e.g. device prefilled from the tracker).
+    // callsign never reaches the logger. Re-seeded when the stored value changes.
     var baseUrl by remember(settings.baseUrl) { mutableStateOf(settings.baseUrl) }
     var apiKey by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
     var device by remember(settings.device) { mutableStateOf(settings.device) }
@@ -159,14 +160,25 @@ fun CoverageLoggerScreen(
                         }
                     },
                 )
+                // Blank = follow the connected tracker's own callsign (and object name, if set).
+                val fromTracker = trackerDevice(tracker)
                 OutlinedTextField(
                     value = device,
                     onValueChange = { device = it },
                     label = { Text("Device callsign") },
+                    placeholder = { Text(fromTracker.ifEmpty { "Connected tracker's callsign" }) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     supportingText = {
-                        Text("As registered on the website, e.g. K7ABC-9. Object trackers: SENDER:OBJECT")
+                        Text(
+                            when {
+                                device.isNotBlank() -> "Leave blank to follow the connected tracker. " +
+                                    "Must match the website, e.g. K7ABC-9, or SENDER:OBJECT for an object"
+                                fromTracker.isNotEmpty() -> "Following the connected tracker: $fromTracker. Type another to override it"
+                                else -> "Blank uses the connected tracker's callsign, plus its tactical " +
+                                    "callsign as SENDER:OBJECT when it beacons as an object"
+                            },
+                        )
                     },
                 )
                 if (!vm.keyPersisted) {
