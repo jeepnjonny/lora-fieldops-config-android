@@ -351,12 +351,14 @@ class CoverageLogger private constructor(context: Context) {
 data class TrackerIdentity(val callsign: String, val objectName: String = "")
 
 /**
- * A tracker's identity as a logger device: "K7ABC-9", or "K7ABC-9:OBJECT" when it beacons
- * as an object (tactical callsign set). "" when it has no callsign (blank or NOCALL).
+ * A tracker's identity as a logger device: "K7ABC-9" (or "K7ABC" with no SSID), or
+ * "K7ABC-9:OBJECT" when it beacons as an object (tactical callsign set). "" when it has
+ * no callsign (blank or NOCALL).
  * The object name keeps its case, as APRS object names are case-sensitive.
  */
 internal fun trackerDevice(tracker: TrackerIdentity?): String {
-    val call = tracker?.callsign?.trim()?.uppercase().orEmpty()
+    // SSID 0 is never sent over the air ("K7ABC-0" goes out as "K7ABC"), so drop it.
+    val call = tracker?.callsign?.trim()?.uppercase().orEmpty().removeSuffix("-0")
     if (call.isEmpty() || call.startsWith("NOCALL")) return ""
     val obj = tracker?.objectName?.trim().orEmpty().take(9)
     return if (obj.isEmpty()) call else "$call:$obj"
