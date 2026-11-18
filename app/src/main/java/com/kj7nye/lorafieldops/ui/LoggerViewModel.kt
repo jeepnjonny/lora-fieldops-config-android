@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.kj7nye.lorafieldops.logger.CoverageLogger
 import com.kj7nye.lorafieldops.logger.LoggerRuntime
 import com.kj7nye.lorafieldops.logger.LoggerSettings
+import com.kj7nye.lorafieldops.logger.TrackerIdentity
 import com.kj7nye.lorafieldops.logger.UploadStatus
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -21,8 +22,8 @@ class LoggerViewModel(app: Application) : AndroidViewModel(app) {
     val uploading: StateFlow<Boolean> = logger.uploading
     val queued: StateFlow<Int> = logger.queuedCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val keyPersisted: Boolean get() = logger.settingsStore.keyPersisted
-    /** The connected tracker's callsign, used when the device field is blank; null until read. */
-    val trackerCallsign: StateFlow<String?> = logger.trackerCallsign
+    /** The connected tracker's identity, used when the device field is blank; null until read. */
+    val tracker: StateFlow<TrackerIdentity?> = logger.tracker
 
     fun setEnabled(v: Boolean) = logger.settingsStore.update { it.copy(enabled = v) }
     fun setUploadTx(v: Boolean) = logger.settingsStore.update { it.copy(uploadTx = v) }

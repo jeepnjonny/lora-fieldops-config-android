@@ -18,7 +18,8 @@ data class LoggerSettings(
     val apiKey: String = "",
     /**
      * Device override: "K7ABC-9", or "SENDER:OBJECT" for an object tracker. Free text by
-     * design. Blank (the default) means the connected tracker's own beacon callsign.
+     * design. Blank (the default) means the connected tracker's own: its callsign,
+     * or "CALLSIGN:TACTICAL" in object mode (see [trackerDevice]).
      */
     val device: String = "",
     val uploadTx: Boolean = true,

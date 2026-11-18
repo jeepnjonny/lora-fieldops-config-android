@@ -62,7 +62,7 @@ fun CoverageLoggerScreen(
     val runtime by vm.runtime.collectAsState()
     val queued by vm.queued.collectAsState()
     val uploading by vm.uploading.collectAsState()
-    val trackerCallsign by vm.trackerCallsign.collectAsState()
+    val tracker by vm.tracker.collectAsState()
 
     // Text fields are edited locally and applied with Save, so a half-typed key or
     // callsign never reaches the logger. Re-seeded when the stored value changes.
@@ -160,8 +160,8 @@ fun CoverageLoggerScreen(
                         }
                     },
                 )
-                // Blank = follow the connected tracker's own callsign.
-                val fromTracker = trackerDevice(trackerCallsign)
+                // Blank = follow the connected tracker's own callsign (and object name, if set).
+                val fromTracker = trackerDevice(tracker)
                 OutlinedTextField(
                     value = device,
                     onValueChange = { device = it },
@@ -172,12 +172,11 @@ fun CoverageLoggerScreen(
                     supportingText = {
                         Text(
                             when {
-                                device.isNotBlank() -> "Leave blank to use the connected tracker's callsign. " +
-                                    "Must match the website, e.g. K7ABC-9. Object trackers: SENDER:OBJECT"
-                                fromTracker.isNotEmpty() -> "Using the connected tracker's callsign, $fromTracker. " +
-                                    "Type another to override it (object trackers: SENDER:OBJECT)"
-                                else -> "Blank uses the connected tracker's callsign. " +
-                                    "Type one to override it (object trackers: SENDER:OBJECT)"
+                                device.isNotBlank() -> "Leave blank to follow the connected tracker. " +
+                                    "Must match the website, e.g. K7ABC-9, or SENDER:OBJECT for an object"
+                                fromTracker.isNotEmpty() -> "Following the connected tracker: $fromTracker. Type another to override it"
+                                else -> "Blank uses the connected tracker's callsign, plus its tactical " +
+                                    "callsign as SENDER:OBJECT when it beacons as an object"
                             },
                         )
                     },
