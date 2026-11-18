@@ -21,6 +21,8 @@ class LoggerViewModel(app: Application) : AndroidViewModel(app) {
     val uploading: StateFlow<Boolean> = logger.uploading
     val queued: StateFlow<Int> = logger.queuedCount.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
     val keyPersisted: Boolean get() = logger.settingsStore.keyPersisted
+    /** The connected tracker's callsign, used when the device field is blank; null until read. */
+    val trackerCallsign: StateFlow<String?> = logger.trackerCallsign
 
     fun setEnabled(v: Boolean) = logger.settingsStore.update { it.copy(enabled = v) }
     fun setUploadTx(v: Boolean) = logger.settingsStore.update { it.copy(uploadTx = v) }

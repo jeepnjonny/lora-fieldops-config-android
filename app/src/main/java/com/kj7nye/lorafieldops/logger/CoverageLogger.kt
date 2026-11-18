@@ -29,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
@@ -88,19 +89,31 @@ class CoverageLogger private constructor(context: Context) {
     val settings: LoggerSettings get() = settingsStore.settings.value
     val isEnabled: Boolean get() = settings.enabled
 
+    /**
+     * The connected tracker's configured beacon callsign, as read from its config on this
+     * link. Null until the config has been read (and after the link ends). May be blank
+     * or NOCALL when the tracker has none set; see [trackerDevice].
+     */
+    private val _trackerCallsign = MutableStateFlow<String?>(null)
+    val trackerCallsign: StateFlow<String?> = _trackerCallsign.asStateFlow()
+
+    /** The device the logger records as: the saved override, else the connected tracker's callsign. */
+    fun effectiveDevice(s: LoggerSettings = settings, tracker: String? = _trackerCallsign.value): String =
+        s.device.trim().ifEmpty { trackerDevice(tracker) }
+
     init {
         scope.launch { for (rows in inserts) runCatching { dao.insert(rows) }.onFailure { Log.w(TAG, "queue insert failed", it) } }
         // Re-evaluate the session whenever a setting that affects recording changes.
         scope.launch {
             settingsStore.settings
-                .map { Triple(it.enabled, it.device.trim(), it.uploadTx to it.uploadRx) }
+                .combine(_trackerCallsign) { s, call -> Triple(s.enabled, effectiveDevice(s, call), s.uploadTx to s.uploadRx) }
                 .distinctUntilChanged()
                 .collect { restartSession() }
         }
         scope.launch {
             var wasOn = false
             settingsStore.settings.map { it.enabled }.distinctUntilChanged().collect { on ->
-                if (on) { prefillDevice(); scheduleUpload() }
+                if (on) scheduleUpload()
                 else if (wasOn) WorkManager.getInstance(app).cancelUniqueWork(UPLOAD_WORK)
                 wasOn = on
             }
@@ -114,6 +127,9 @@ class CoverageLogger private constructor(context: Context) {
     /** A BLE session opened. Starts logging on it if the logger is enabled. */
     fun attach(link: BleTransport) {
         transport = link
+        // A new link may be a different tracker (or a reflashed one): its callsign is
+        // unknown until the ViewModel reads its config and calls [setTrackerCallsign].
+        _trackerCallsign.value = null
         _runtime.value = _runtime.value.copy(reconnecting = false)
         restartSession()
     }
@@ -124,6 +140,7 @@ class CoverageLogger private constructor(context: Context) {
      */
     fun detach(reconnecting: Boolean = false) {
         transport = null
+        _trackerCallsign.value = null
         _runtime.value = _runtime.value.copy(reconnecting = reconnecting && isEnabled)
         restartSession()
     }
@@ -133,20 +150,12 @@ class CoverageLogger private constructor(context: Context) {
         updateService()
     }
 
-    @Volatile private var trackerCallsign: String? = null
-
-    /** Remembers the connected tracker's configured callsign, to prefill the device field. */
-    fun suggestDevice(callsign: String) {
-        val c = callsign.trim().uppercase()
-        if (c.isEmpty() || c.startsWith("NOCALL")) return
-        trackerCallsign = c
-        prefillDevice()
-    }
-
-    /** Fills an empty device field from the tracker, but only once the logger is on. */
-    private fun prefillDevice() {
-        val c = trackerCallsign ?: return
-        if (isEnabled && settings.device.isBlank()) settingsStore.update { it.copy(device = c) }
+    /**
+     * The connected tracker's configured beacon callsign, read from its config (on connect
+     * and after each save). Used as the device when the device field is left blank.
+     */
+    fun setTrackerCallsign(callsign: String) {
+        _trackerCallsign.value = callsign.trim().uppercase()
     }
 
     /**
@@ -156,7 +165,7 @@ class CoverageLogger private constructor(context: Context) {
     fun recordEvent(trackerCallsign: String, text: String) {
         val s = settings
         if (!s.enabled || !s.recordSettingNotes) return
-        val device = s.device.trim()
+        val device = effectiveDevice(s)
         if (device.isEmpty() || normalizeCall(deviceSourceCall(device)) != normalizeCall(trackerCallsign)) return
         val entry = CoverageEntry(CoverageEntryType.EVENT, System.currentTimeMillis() / 1000, text = text)
         inserts.trySend(listOf(entry.toRow(device)))
@@ -168,7 +177,8 @@ class CoverageLogger private constructor(context: Context) {
         sessionJob = null
         val link = transport
         val s = settings
-        val device = s.device.trim()
+        val tracker = _trackerCallsign.value
+        val device = effectiveDevice(s, tracker)
         sessionJob = scope.launch {
             // Non-cancellable wait: if this job is itself replaced while waiting, the next
             // one still waits for it, so an old session's teardown (KISS unsubscribe)
@@ -180,7 +190,9 @@ class CoverageLogger private constructor(context: Context) {
                 return@launch
             }
             if (device.isEmpty()) {
-                _runtime.value = _runtime.value.copy(logging = false, linkError = "Set the device callsign to start logging")
+                val why = if (tracker == null) "Reading the tracker's callsign…"
+                    else "The tracker has no callsign set. Set one in its config, or enter a device callsign here"
+                _runtime.value = _runtime.value.copy(logging = false, linkError = why)
                 updateService()
                 return@launch
             }
@@ -331,4 +343,10 @@ class CoverageLogger private constructor(context: Context) {
             instance ?: CoverageLogger(context).also { instance = it }
         }
     }
+}
+
+/** A tracker's configured callsign as a logger device, or "" when it has none (blank or NOCALL). */
+internal fun trackerDevice(callsign: String?): String {
+    val c = callsign?.trim()?.uppercase().orEmpty()
+    return if (c.startsWith("NOCALL")) "" else c
 }

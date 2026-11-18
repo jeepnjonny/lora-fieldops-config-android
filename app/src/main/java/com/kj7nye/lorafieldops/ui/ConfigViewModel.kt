@@ -396,7 +396,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                     _config.value = cfg
                     savedConfig = cfg
                     _dirty.value = false
-                    cfg.beacons.firstOrNull()?.callsign?.let { coverageLogger.suggestDevice(it) }
+                    coverageLogger.setTrackerCallsign(cfg.beacons.firstOrNull()?.callsign.orEmpty())
                 } catch (e: Exception) {
                     snack("Config parse failed: ${e.message}")
                 }
@@ -413,7 +413,13 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun save() = viewModelScope.launch {
         val result = protocol?.sendCommand("save") ?: return@launch
         when (result) {
-            is CommandResult.Ok -> { _dirty.value = false; snack("Config saved"); recordSettingNotes() }
+            is CommandResult.Ok -> {
+                _dirty.value = false
+                snack("Config saved")
+                // Before the notes, so a callsign change is noted under the new callsign.
+                _config.value?.let { coverageLogger.setTrackerCallsign(it.beacons.firstOrNull()?.callsign.orEmpty()) }
+                recordSettingNotes()
+            }
             is CommandResult.Err -> snack("Save failed: ${result.message}")
             CommandResult.Timeout -> snack("Save timed out")
         }
