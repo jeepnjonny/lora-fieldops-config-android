@@ -14,6 +14,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
@@ -123,6 +124,14 @@ class BleTransport(
     // Completed from BluetoothGattCallback (binder thread); awaited by the open sequence / writers.
     @Volatile private var connectSignal: CompletableDeferred<Boolean>? = null
     @Volatile private var pendingOperation: CompletableDeferred<Int>? = null
+    /**
+     * Completed (with the reason) when the link drops. Lets waits that aren't GATT
+     * operations (pairing, the settle delay) notice, and makes "opened" vs "dropped"
+     * a single decision under [linkLock].
+     */
+    private val linkDead = CompletableDeferred<Unit>()
+    @Volatile private var dropReason: String? = null
+    private val linkLock = Any()
 
     override val isOpen: Boolean get() = opened
 
@@ -131,7 +140,12 @@ class BleTransport(
         scope.launch {
             try {
                 runOpenSequence()
-                opened = true
+                // Atomic with the disconnect callback: either the link is reported Opened
+                // and a later drop emits Lost, or the drop already happened and this fails.
+                synchronized(linkLock) {
+                    if (linkDead.isCompleted || gatt == null) throw IOException(linkDropMessage())
+                    opened = true
+                }
                 _connectionEvents.tryEmit(ConnectionEvent.Opened(displayName))
             } catch (e: Exception) {
                 if (!closed) {
@@ -203,6 +217,9 @@ class BleTransport(
         delay(LINK_SETTLE_MS)
     }
 
+    private fun linkDropMessage(): String =
+        "Bluetooth link dropped while connecting (${dropReason ?: "no link"})"
+
     /**
      * The tracker only exposes the config service on PIN-protected links, so pair up
      * front: the system shows its PIN dialog now, rather than in the middle of the
@@ -215,12 +232,7 @@ class BleTransport(
         val bonded = CompletableDeferred<Boolean>()
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
-                val changed: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                }
+                val changed = IntentCompat.getParcelableExtra(intent, BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
                 if (changed?.address != device.address) return
                 when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
                     BluetoothDevice.BOND_BONDED -> bonded.complete(true)
@@ -246,6 +258,11 @@ class BleTransport(
                 delay(BOND_POLL_INTERVAL_MS)
             }
         }
+        // A link that drops while the PIN dialog is up fails now, not after BOND_TIMEOUT_MS.
+        val dropWatcher = scope.launch {
+            linkDead.await()
+            bonded.completeExceptionally(IOException(linkDropMessage()))
+        }
         try {
             if (device.bondState == BluetoothDevice.BOND_NONE && !device.createBond()) {
                 throw IOException("Android couldn't start pairing with the tracker")
@@ -258,6 +275,7 @@ class BleTransport(
             if (!ok) throw IOException("Pairing failed — check the PIN (Bluetooth section of the tracker config).")
         } finally {
             bondPoller.cancel()
+            dropWatcher.cancel()
             runCatching { context.unregisterReceiver(receiver) }
         }
     }
@@ -386,12 +404,16 @@ class BleTransport(
             if (newState != BluetoothProfile.STATE_DISCONNECTED) return
 
             // Unblock whatever the open sequence or a writer is waiting on.
+            val wasOpened = synchronized(linkLock) {
+                dropReason = "status $status"
+                linkDead.complete(Unit)
+                opened.also { opened = false }
+            }
             connectSignal?.complete(false)
             pendingOperation?.completeExceptionally(IOException("Bluetooth link dropped (status $status)"))
 
             if (closed) return
-            if (opened) {
-                opened = false
+            if (wasOpened) {
                 _connectionEvents.tryEmit(ConnectionEvent.Lost("Bluetooth link lost (status $status)"))
                 releaseGatt()
             }
