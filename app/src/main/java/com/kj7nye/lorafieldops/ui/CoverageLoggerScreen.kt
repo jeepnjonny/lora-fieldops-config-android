@@ -11,16 +11,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +43,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -45,7 +55,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kj7nye.lorafieldops.logger.trackerDevice
 import java.text.DateFormat
+import kotlinx.coroutines.delay
 import java.util.Date
+
+private fun fieldsChangedSinceSave(baseUrl: String, apiKey: String, device: String, s: com.kj7nye.lorafieldops.logger.LoggerSettings) =
+    baseUrl != s.baseUrl || apiKey != s.apiKey || device != s.device
 
 /**
  * Settings and status for the optional coverage logger. [onBack] is shown as a back
@@ -70,6 +84,10 @@ fun CoverageLoggerScreen(
     var apiKey by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
     var device by remember(settings.device) { mutableStateOf(settings.device) }
     var showKey by remember { mutableStateOf(false) }
+    // "Saved" confirmation next to the button; fades after a few seconds or on the next edit.
+    var savedNote by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(savedNote) { if (savedNote != null) { delay(4_000); savedNote = null } }
+    LaunchedEffect(baseUrl, apiKey, device) { if (fieldsChangedSinceSave(baseUrl, apiKey, device, settings)) savedNote = null }
     val fieldsChanged = baseUrl != settings.baseUrl || apiKey != settings.apiKey || device != settings.device
 
     var notificationsDenied by remember { mutableStateOf(false) }
@@ -104,6 +122,63 @@ fun CoverageLoggerScreen(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        // Status first: it's what you check on a drive.
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Status", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                val state = when {
+                    !settings.enabled -> "Off"
+                    runtime.logging -> "Logging ${runtime.device}: ${runtime.sent} sent, ${runtime.heard} heard"
+                    runtime.reconnecting -> "Reconnecting to the tracker…"
+                    runtime.linkError != null -> runtime.linkError!!
+                    else -> "Waiting for a Bluetooth tracker connection"
+                }
+                InfoRow("Logger", state)
+                InfoRow("Queued", "$queued")
+                InfoRow(
+                    "Last upload",
+                    if (status.lastUploadMs > 0)
+                        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM).format(Date(status.lastUploadMs))
+                    else "Never",
+                )
+                OutlinedButton(
+                    onClick = vm::uploadNow,
+                    enabled = settings.enabled && !uploading && queued > 0,
+                ) {
+                    if (uploading) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(if (uploading) "Uploading…" else "Upload now")
+                }
+            }
+        }
+
+        status.blockedMessage?.let {
+            WarningBanner("Uploads stopped: $it\nFix it below and tap Save; uploads resume after any settings change.")
+        }
+        if (status.blockedMessage == null) {
+            status.lastError?.let { WarningBanner("Last upload problem: $it") }
+        }
+        if (status.entryErrors.isNotEmpty()) {
+            var showEntryErrors by remember { mutableStateOf(false) }
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    TextButton(onClick = { showEntryErrors = !showEntryErrors }) {
+                        Text(
+                            "${status.entryErrors.size} entr${if (status.entryErrors.size == 1) "y" else "ies"} " +
+                                "rejected by the server (${if (showEntryErrors) "hide" else "show"})",
+                        )
+                    }
+                    if (showEntryErrors) {
+                        status.entryErrors.forEach {
+                            Text("• $it", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -197,8 +272,22 @@ fun CoverageLoggerScreen(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-                Button(onClick = { vm.saveFields(baseUrl, apiKey, device) }, enabled = fieldsChanged && urlError == null) {
-                    Text("Save")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            savedNote = if (keyWillClear) "Saved. Upload key cleared: enter the new site's key." else "Saved"
+                            vm.saveFields(baseUrl, apiKey, device)
+                        },
+                        enabled = fieldsChanged && urlError == null,
+                    ) {
+                        Text("Save")
+                    }
+                    savedNote?.let {
+                        Spacer(Modifier.width(12.dp))
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(6.dp))
+                        Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                    }
                 }
             }
         }
@@ -219,43 +308,5 @@ fun CoverageLoggerScreen(
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Status", style = MaterialTheme.typography.titleMedium)
-                val state = when {
-                    !settings.enabled -> "Off"
-                    runtime.logging -> "Logging ${runtime.device}: ${runtime.sent} sent, ${runtime.heard} heard"
-                    runtime.reconnecting -> "Reconnecting to the tracker…"
-                    runtime.linkError != null -> runtime.linkError!!
-                    else -> "Waiting for a Bluetooth tracker connection"
-                }
-                InfoRow("Logger", state)
-                InfoRow("Queued", "$queued")
-                InfoRow(
-                    "Last upload",
-                    if (status.lastUploadMs > 0)
-                        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM).format(Date(status.lastUploadMs))
-                    else "Never",
-                )
-                status.blockedMessage?.let {
-                    Text("Uploads stopped: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-                if (status.blockedMessage == null) {
-                    status.lastError?.let {
-                        Text("Last error: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                if (status.entryErrors.isNotEmpty()) {
-                    Text("Entries the server rejected:", style = MaterialTheme.typography.bodySmall)
-                    status.entryErrors.forEach {
-                        Text("• $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                    }
-                }
-                OutlinedButton(
-                    onClick = vm::uploadNow,
-                    enabled = settings.enabled && !uploading && queued > 0,
-                ) { Text(if (uploading) "Uploading…" else "Upload now") }
-            }
-        }
     }
 }
