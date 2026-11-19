@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -36,10 +35,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -56,7 +52,6 @@ import kotlinx.coroutines.launch
 fun StatusScreen(vm: ConfigViewModel) {
     val statusLines by vm.statusLines.collectAsStateWithLifecycle()
     val loading by vm.statusLoading.collectAsStateWithLifecycle()
-    var showOtaDfuDialog by remember { mutableStateOf(false) }
 
     // Everything on entry: the reads queue on the link and fill in card by card.
     LaunchedEffect(Unit) { vm.refreshAllStatus() }
@@ -147,47 +142,6 @@ fun StatusScreen(vm: ConfigViewModel) {
                 }
             }
         }
-
-        // Rarely needed and it ends the session, so it sits last and plain.
-        Column(Modifier.padding(top = 8.dp)) {
-            Text(
-                "Firmware update",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.semantics { heading() },
-            )
-            Text(
-                "nRF52 boards only: reboots into the OTA DFU bootloader and ends this connection; " +
-                    "reflash with the nRF Connect app.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            TextButton(onClick = { showOtaDfuDialog = true }) {
-                Text("Enter OTA DFU mode…", color = MaterialTheme.colorScheme.error)
-            }
-        }
-    }
-
-    if (showOtaDfuDialog) {
-        AlertDialog(
-            onDismissRequest = { showOtaDfuDialog = false },
-            title = { Text("Enter OTA DFU mode?") },
-            text = {
-                Text(
-                    "The tracker will reboot into the Nordic DFU bootloader and drop off " +
-                        "this connection. You'll need the nRF Connect app to upload new " +
-                        "firmware. ESP32 boards don't support this and will report an error instead.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { showOtaDfuDialog = false; vm.triggerOtaDfu() }) {
-                    Text("Enter DFU mode", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showOtaDfuDialog = false }) { Text("Cancel") }
-            },
-        )
     }
 }
 
