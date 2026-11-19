@@ -11,3 +11,9 @@
 *.jks
 app/build/
 app/release/
+/shared/build
+
+# Kotlin Multiplatform / iOS
+.kotlin/
+iosApp/build/
+iosApp/*.xcodeproj/

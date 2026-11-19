@@ -61,8 +61,13 @@ abstract class LogQueueDb : RoomDatabase() {
     }
 }
 
-/** [UploadQueue] on Room. SQLite caps bound parameters, so deletes go in chunks. */
-class RoomUploadQueue(private val dao: LogQueueDao) : UploadQueue {
+/** [LogQueueStore] on Room. SQLite caps bound parameters, so deletes go in chunks. */
+class RoomUploadQueue(private val dao: LogQueueDao) : LogQueueStore {
+    override val count: Flow<Int> = dao.countFlow()
+
+    override suspend fun insert(device: String, entries: List<CoverageEntry>) =
+        dao.insert(entries.map { it.toRow(device) })
+
     override suspend fun nextBatch(limit: Int, exclude: Set<String>): List<QueuedEntry> {
         while (true) {
             val first = (if (exclude.isEmpty()) dao.oldest() else dao.oldestExcluding(exclude.toList()))

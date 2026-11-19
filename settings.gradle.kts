@@ -27,3 +27,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "LoRaFieldOpsConfig"
 include(":app")
+include(":shared")

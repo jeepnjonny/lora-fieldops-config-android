@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.kj7nye.lorafieldops.AndroidPlatform
 import com.kj7nye.lorafieldops.MainActivity
 import com.kj7nye.lorafieldops.R
 import kotlinx.coroutines.CoroutineScope
@@ -40,7 +41,7 @@ class LoggerService : Service() {
         super.onCreate()
         running = true
         createChannel()
-        val logger = CoverageLogger.get(this)
+        val logger = AndroidPlatform.get(this).coverageLogger
         if (!goForeground(text(logger.runtime.value, 0))) return
         scope.launch {
             combine(logger.runtime, logger.queuedCount) { rt, q -> text(rt, q) }
@@ -53,7 +54,7 @@ class LoggerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!CoverageLogger.get(this).serviceWanted) stopSelf()
+        if (!AndroidPlatform.get(this).coverageLogger.serviceWanted) stopSelf()
         // Not sticky: after the process dies there is no BLE link to log from.
         return START_NOT_STICKY
     }

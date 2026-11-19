@@ -16,6 +16,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import java.io.IOException
+import com.kj7nye.lorafieldops.platform.BleLink
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -35,15 +36,15 @@ import kotlinx.coroutines.withTimeout
 // GATT layout — must match the firmware's ble_utils.cpp
 // ---------------------------------------------------------------------------
 
-/** APRS.fi KISS TNC service: the UUID the tracker advertises (used to find it in a scan). */
-val KISS_SERVICE_UUID: UUID = UUID.fromString("00000001-ba2a-46c9-ae49-01b0961f68bb")
+/** APRS.fi KISS TNC service: advertised by the tracker (used to find it in a scan). */
+val KISS_SERVICE: UUID = UUID.fromString(KISS_SERVICE_UUID)
 /** KISS service: tracker -> phone notifications carrying KISS frames (heard packets and its own TX). */
-private val KISS_TX_CHAR_UUID: UUID = UUID.fromString("00000003-ba2a-46c9-ae49-01b0961f68bb")
+private val KISS_TX_CHAR: UUID = UUID.fromString(KISS_TX_CHAR_UUID)
 
 /** Configuration link (Nordic UART Service layout): carries the setup CLI. Not advertised. */
-val CONFIG_SERVICE_UUID: UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
-private val CONFIG_RX_CHAR_UUID: UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")  // phone writes
-private val CONFIG_TX_CHAR_UUID: UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")  // tracker notifies
+private val CONFIG_SERVICE: UUID = UUID.fromString(CONFIG_SERVICE_UUID)
+private val CONFIG_RX_CHAR: UUID = UUID.fromString(CONFIG_RX_CHAR_UUID)  // phone writes
+private val CONFIG_TX_CHAR: UUID = UUID.fromString(CONFIG_TX_CHAR_UUID)  // tracker notifies
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
 private const val REQUESTED_MTU          = 247
@@ -96,7 +97,7 @@ class BleTransport(
     private val context: Context,
     private val device: BluetoothDevice,
     private val displayName: String,
-) : DeviceTransport {
+) : BleLink {
 
     override val kind = TransportKind.BLE
 
@@ -109,7 +110,7 @@ class BleTransport(
     // Raw bytes from the KISS service, only while [setKissNotifications] is on (coverage
     // logger). Kept apart from [rxFlow] so the setup CLI never sees KISS traffic.
     private val _kissFlow = MutableSharedFlow<ByteArray>(extraBufferCapacity = 512)
-    val kissFlow: SharedFlow<ByteArray> = _kissFlow
+    override val kissFlow: SharedFlow<ByteArray> = _kissFlow
 
     private val scope     = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val gattMutex = Mutex()
@@ -136,7 +137,7 @@ class BleTransport(
     override val isOpen: Boolean get() = opened
 
     /** Starts the open sequence; the outcome arrives on [connectionEvents]. */
-    fun open() {
+    override fun open() {
         scope.launch {
             try {
                 runOpenSequence()
@@ -204,12 +205,12 @@ class BleTransport(
         // with its PIN off has no config service at all, so it must be rejected with a
         // clear message instead of first being put through a pointless pairing attempt.
         val configService = discoverConfigService()
-        val txChar = configService.getCharacteristic(CONFIG_TX_CHAR_UUID)
+        val txChar = configService.getCharacteristic(CONFIG_TX_CHAR)
             ?: throw IOException(MSG_NO_CONFIG_SERVICE)
-        configRxChar = configService.getCharacteristic(CONFIG_RX_CHAR_UUID)
+        configRxChar = configService.getCharacteristic(CONFIG_RX_CHAR)
             ?: throw IOException(MSG_NO_CONFIG_SERVICE)
         // Optional: only the coverage logger uses it, and only when switched on.
-        kissTxChar = gatt?.getService(KISS_SERVICE_UUID)?.getCharacteristic(KISS_TX_CHAR_UUID)
+        kissTxChar = gatt?.getService(KISS_SERVICE)?.getCharacteristic(KISS_TX_CHAR)
 
         ensureBonded()
 
@@ -291,7 +292,7 @@ class BleTransport(
         if (refreshGattCache()) delay(GATT_REFRESH_SETTLE_MS)
         val status = gattOperation("service discovery") { g -> g.discoverServices() }
         if (status != BluetoothGatt.GATT_SUCCESS) throw IOException("Bluetooth service discovery failed (status $status)")
-        return gatt?.getService(CONFIG_SERVICE_UUID) ?: throw IOException(MSG_NO_CONFIG_SERVICE)
+        return gatt?.getService(CONFIG_SERVICE) ?: throw IOException(MSG_NO_CONFIG_SERVICE)
     }
 
     /**
@@ -300,7 +301,7 @@ class BleTransport(
      * while a setup session is running. Throws IOException if the tracker has no KISS
      * characteristic or the subscription fails; the setup link is unaffected either way.
      */
-    suspend fun setKissNotifications(enabled: Boolean) {
+    override suspend fun setKissNotifications(enabled: Boolean) {
         val char = kissTxChar ?: throw IOException("This tracker has no Bluetooth KISS service")
         val g = gatt ?: throw IOException("Bluetooth link not open")
         if (!g.setCharacteristicNotification(char, enabled)) throw IOException("Couldn't change KISS notifications")
@@ -452,8 +453,8 @@ class BleTransport(
 
         private fun route(c: BluetoothGattCharacteristic, value: ByteArray) {
             when (c.uuid) {
-                CONFIG_TX_CHAR_UUID -> _rxFlow.tryEmit(value.copyOf())
-                KISS_TX_CHAR_UUID   -> _kissFlow.tryEmit(value.copyOf())
+                CONFIG_TX_CHAR -> _rxFlow.tryEmit(value.copyOf())
+                KISS_TX_CHAR   -> _kissFlow.tryEmit(value.copyOf())
             }
         }
     }

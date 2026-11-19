@@ -3,6 +3,7 @@ package com.kj7nye.lorafieldops.logger
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.kj7nye.lorafieldops.AndroidPlatform
 
 /**
  * Background upload of the coverage queue. Enqueued by [CoverageLogger.scheduleUpload]
@@ -11,7 +12,7 @@ import androidx.work.WorkerParameters
  */
 class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result =
-        when (CoverageLogger.get(applicationContext).runUpload()) {
+        when (AndroidPlatform.get(applicationContext).coverageLogger.runUpload()) {
             is UploadResult.Retry -> Result.retry()
             else -> Result.success()   // done, blocked until settings change, or logger off
         }
