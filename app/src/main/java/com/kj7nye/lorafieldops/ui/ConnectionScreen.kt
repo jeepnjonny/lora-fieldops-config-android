@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -50,6 +51,7 @@ fun ConnectionScreen(
 ) {
     val state by vm.connectionState.collectAsStateWithLifecycle()
     val loggerRuntime by vm.coverageLogger.runtime.collectAsStateWithLifecycle()
+    val retryLabel by vm.retryLabel.collectAsStateWithLifecycle()
     var devices by remember { mutableStateOf<List<UsbSerialDriver>>(emptyList()) }
 
     // Refresh device list whenever screen is shown or connection state changes
@@ -84,19 +86,25 @@ fun ConnectionScreen(
             is ConnectionState.Connecting -> {
                 CircularProgressIndicator()
                 Spacer(Modifier.height(12.dp))
-                Text(s.message)
+                Text(s.message, style = MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.height(16.dp))
+                OutlinedButton(onClick = { vm.cancelConnecting() }) { Text("Cancel") }
             }
             is ConnectionState.Connected -> {
                 // Handled by LaunchedEffect navigation above
             }
             is ConnectionState.Error, ConnectionState.Disconnected -> {
                 if (s is ConnectionState.Error) {
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            text = s.message,
-                            modifier = Modifier.padding(16.dp),
-                            color = MaterialTheme.colorScheme.error,
-                        )
+                    WarningBanner(s.message)
+                    if (!loggerRuntime.reconnecting) {
+                        retryLabel?.let { label ->
+                            Spacer(Modifier.height(8.dp))
+                            Button(onClick = { vm.retryConnection() }) {
+                                Icon(Icons.Default.Refresh, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text(label)
+                            }
+                        }
                     }
                     Spacer(Modifier.height(16.dp))
                 }
@@ -116,7 +124,7 @@ fun ConnectionScreen(
                 UsbSection(
                     devices = devices,
                     onRefresh = { devices = vm.serialManager.findDevices() },
-                    onConnect = { driver -> requestPermissionAndConnect(vm, driver) },
+                    onConnect = { driver -> vm.connectUsbWithPermission(driver) },
                 )
                 Spacer(Modifier.height(24.dp))
                 HorizontalDivider()
@@ -163,13 +171,6 @@ private fun UsbSection(
     }
     Spacer(Modifier.height(12.dp))
     OutlinedButton(onClick = onRefresh) { Text("Refresh devices") }
-}
-
-/** Request USB permission if needed (answers at once when already held), then connect. */
-private fun requestPermissionAndConnect(vm: ConfigViewModel, driver: UsbSerialDriver) {
-    vm.serialManager.requestPermission(driver.device) { granted ->
-        if (granted) vm.connectUsb(driver)
-    }
 }
 
 // -----------------------------------------------------------------------------

@@ -88,6 +88,15 @@ data class FieldError(val field: String, val message: String)
 /** One AP found by `wifista scan`. */
 data class WifiScanResult(val ssid: String, val rssi: Int, val secure: Boolean)
 
+/** A link the user chose, kept so it can be retried. */
+private sealed interface LinkTarget {
+    data class Usb(val driver: UsbSerialDriver) : LinkTarget
+    data class Ble(val tracker: BleTrackerInfo) : LinkTarget
+}
+
+/** A Save or Discard the tracker is working on. */
+enum class BusyAction { SAVING, DISCARDING }
+
 /** Progress of a config import from the Import sheet. */
 sealed class ImportState {
     object Idle : ImportState()
@@ -112,8 +121,19 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     /** Last tracker connected over BLE, for the logger's automatic reconnect. */
     private var lastBleTracker: BleTrackerInfo? = null
     private var reconnectJob: Job? = null
+    /** Link the user last opened, for [retryConnection]. */
+    private var lastTarget: LinkTarget? = null
+    private val _retryLabel = MutableStateFlow<String?>(null)
+    /** Label for the connection screen's Retry button; null when there is nothing to retry. */
+    val retryLabel: StateFlow<String?> = _retryLabel.asStateFlow()
     /** Config as last loaded from / saved to flash; the "before" side of setting-change notes. */
-    private var savedConfig: TrackerConfig? = null
+    private val _savedConfig = MutableStateFlow<TrackerConfig?>(null)
+    /** Config as last loaded from / saved to flash, so the editor can mark what changed. */
+    val savedConfig: StateFlow<TrackerConfig?> = _savedConfig.asStateFlow()
+
+    private val _busy = MutableStateFlow<BusyAction?>(null)
+    /** A Save or Discard in progress; the editor shows it and ignores repeat taps. */
+    val busy: StateFlow<BusyAction?> = _busy.asStateFlow()
     /** Link carrying the current session: [serialManager] or a [BleTransport]. */
     private var transport: DeviceTransport? = null
 
@@ -175,6 +195,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     // Pending debounced sends, keyed by field (e.g. "beacon callsign") — a fresh edit
     // to the same field cancels and restarts the timer instead of queuing another send.
     private val fieldDebounceJobs = mutableMapOf<String, Job>()
+    /** The command each pending debounced send will issue, by field. */
+    private val pendingFieldCmds = mutableMapOf<String, String>()
 
     // -------------------------------------------------------------------------
     // Connection lifecycle
@@ -183,7 +205,42 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     /** Opens a setup session over USB serial. Caller has already obtained USB permission. */
     fun connectUsb(driver: UsbSerialDriver) {
         cancelLoggerReconnect()
+        rememberTarget(LinkTarget.Usb(driver))
         startSession(serialManager) { serialManager.open(driver) }
+    }
+
+    /** Asks for USB permission if needed (Android shows a dialog), then connects. */
+    fun connectUsbWithPermission(driver: UsbSerialDriver) {
+        rememberTarget(LinkTarget.Usb(driver))
+        serialManager.requestPermission(driver.device) { granted ->
+            if (granted) {
+                connectUsb(driver)
+            } else {
+                _connectionState.value = ConnectionState.Error(
+                    "USB access was denied. Tap Retry and choose Allow when Android asks.",
+                )
+            }
+        }
+    }
+
+    /** Opens the last link again (USB or Bluetooth), e.g. after it failed to open. */
+    fun retryConnection() {
+        when (val t = lastTarget) {
+            is LinkTarget.Usb -> connectUsbWithPermission(t.driver)
+            is LinkTarget.Ble -> connectBle(t.tracker)
+            null -> {}
+        }
+    }
+
+    /** Stops a connection attempt in progress (pairing, setup handshake). */
+    fun cancelConnecting() = disconnect()
+
+    private fun rememberTarget(t: LinkTarget) {
+        lastTarget = t
+        _retryLabel.value = when (t) {
+            is LinkTarget.Usb -> "Retry ${t.driver.device.productName ?: "USB device"}"
+            is LinkTarget.Ble -> "Retry ${t.tracker.name}"
+        }
     }
 
     /**
@@ -193,6 +250,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun connectBle(tracker: BleTrackerInfo) {
         cancelLoggerReconnect()
+        rememberTarget(LinkTarget.Ble(tracker))
         openBle(tracker)
     }
 
@@ -348,6 +406,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         logCollectorJob = null
         fieldDebounceJobs.values.forEach { it.cancel() }
         fieldDebounceJobs.clear()
+        pendingFieldCmds.clear()
         protocol?.close()
         protocol = null
         transport?.close()
@@ -414,7 +473,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     val cfg = json.decodeFromString(TrackerConfig.serializer(), r.text)
                     _config.value = cfg
-                    savedConfig = cfg
+                    _savedConfig.value = cfg
                     _dirty.value = false
                     coverageLogger.setTracker(cfg.beacons.firstOrNull())
                 } catch (e: Exception) {
@@ -430,24 +489,32 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     // Save / Discard / Reboot
     // -------------------------------------------------------------------------
 
-    fun save() {
-        viewModelScope.launch {
-            val proto = protocol ?: return@launch
-            if (report(proto.sendCommand("save"), "Save", ok = "Config saved")) {
-                _dirty.value = false
-                // Before the notes, so a callsign or object change is noted under the new device.
-                _config.value?.let { coverageLogger.setTracker(it.beacons.firstOrNull()) }
-                recordSettingNotes()
-            }
+    fun save() = runBusy(BusyAction.SAVING) { proto ->
+        // Edits still waiting out their typing debounce go first, so Save includes them.
+        flushPendingFields()
+        if (report(proto.sendCommand("save"), "Save", ok = "Config saved")) {
+            _dirty.value = false
+            // Before the notes, so a callsign or object change is noted under the new device.
+            _config.value?.let { coverageLogger.setTracker(it.beacons.firstOrNull()) }
+            recordSettingNotes()
         }
     }
 
-    fun discard() {
+    fun discard() = runBusy(BusyAction.DISCARDING) { proto ->
+        fieldDebounceJobs.values.forEach { it.cancel() }
+        fieldDebounceJobs.clear()
+        pendingFieldCmds.clear()
+        // With unsaved edits the tracker reboots instead of printing a prompt.
+        val r = proto.sendCommand("discard", completeOn = "rebooting to reload config")
+        if (report(r, "Discard", ok = "Discarded — device rebooting")) _dirty.value = false
+    }
+
+    /** Runs [block] as the one Save/Discard in progress; a second tap meanwhile is ignored. */
+    private fun runBusy(action: BusyAction, block: suspend (ProtocolHandler) -> Unit) {
+        val proto = protocol ?: return
+        if (!_busy.compareAndSet(null, action)) return
         viewModelScope.launch {
-            val proto = protocol ?: return@launch
-            // With unsaved edits the tracker reboots instead of printing a prompt.
-            val r = proto.sendCommand("discard", completeOn = "rebooting to reload config")
-            if (report(r, "Discard", ok = "Discarded — device rebooting")) _dirty.value = false
+            try { block(proto) } finally { _busy.value = null }
         }
     }
 
@@ -466,8 +533,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun recordSettingNotes() {
         val after = _config.value ?: return
-        val before = savedConfig
-        savedConfig = after
+        val before = _savedConfig.value
+        _savedConfig.value = after
         if (before == null) return
         val callsign = after.beacons.firstOrNull()?.callsign ?: return
         settingChangeNotes(before, after).forEach { coverageLogger.recordEvent(callsign, it) }
@@ -1011,6 +1078,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         }
         _config.value?.localUpdate() ?: return
         fieldDebounceJobs.remove(cmdPrefix)?.cancel()
+        pendingFieldCmds.remove(cmdPrefix)
     }
 
     /**
@@ -1044,16 +1112,27 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         _dirty.value = true
 
         fieldDebounceJobs.remove(fieldKey)?.cancel()
+        pendingFieldCmds.remove(fieldKey)
 
         if (debounceMs <= 0L) {
             viewModelScope.launch { dispatchField(cmd, fieldKey) }
         } else {
+            pendingFieldCmds[fieldKey] = cmd
             fieldDebounceJobs[fieldKey] = viewModelScope.launch {
                 delay(debounceMs)
                 fieldDebounceJobs.remove(fieldKey)
+                pendingFieldCmds.remove(fieldKey)
                 dispatchField(cmd, fieldKey)
             }
         }
+    }
+
+    /** Sends every debounced edit now instead of after its delay. */
+    private suspend fun flushPendingFields() {
+        val pending = pendingFieldCmds.toMap()
+        pending.keys.forEach { fieldDebounceJobs.remove(it)?.cancel() }
+        pendingFieldCmds.clear()
+        pending.forEach { (key, cmd) -> dispatchField(cmd, key) }
     }
 
     /**
