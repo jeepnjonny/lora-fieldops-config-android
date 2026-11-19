@@ -56,7 +56,7 @@ jobs:
           fi
 
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest
+        run: ./gradlew testDebugUnitTest :shared:testAndroidHostTest
 
       - name: Decode release keystore
         env:

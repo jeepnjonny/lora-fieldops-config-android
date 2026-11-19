@@ -7,6 +7,11 @@ plugins {
 }
 
 kotlin {
+    compilerOptions {
+        // SyncLock is an expect class; stable in practice, still flagged Beta.
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
     android {
         namespace = "com.kj7nye.lorafieldops.shared"
         compileSdk = 37

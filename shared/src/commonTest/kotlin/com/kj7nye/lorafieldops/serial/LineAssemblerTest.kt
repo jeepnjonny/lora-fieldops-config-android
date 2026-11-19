@@ -26,16 +26,16 @@ class LineAssemblerTest {
     @Test
     fun crLfAndBlankLines() {
         val a = LineAssembler()
-        assertEquals(listOf("one", "two"), a.feed("one\r\n\r\ntwo\npart".toByteArray()))
-        assertEquals(listOf("partial"), a.feed("ial\r\n".toByteArray()))
+        assertEquals(listOf("one", "two"), a.feed("one\r\n\r\ntwo\npart".encodeToByteArray()))
+        assertEquals(listOf("partial"), a.feed("ial\r\n".encodeToByteArray()))
     }
 
     @Test
     fun decoderPassesThroughWholeChunks() {
         val d = Utf8StreamDecoder()
-        assertEquals("abc", d.decode("abc".toByteArray()))
+        assertEquals("abc", d.decode("abc".encodeToByteArray()))
         val euro = "€".encodeToByteArray()
         assertEquals("", d.decode(euro.copyOfRange(0, 2)))
-        assertEquals("€x", d.decode(euro.copyOfRange(2, 3) + "x".toByteArray()))
+        assertEquals("€x", d.decode(euro.copyOfRange(2, 3) + "x".encodeToByteArray()))
     }
 }
