@@ -1,5 +1,6 @@
 package com.kj7nye.lorafieldops.ui
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -24,7 +25,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,8 +40,8 @@ private val LOG_LEVELS = listOf("off", "error", "warn", "info", "debug")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LogScreen(vm: ConfigViewModel) {
-    val logLines by vm.logLines.collectAsState()
-    val currentLevel by vm.currentLogLevel.collectAsState()
+    val logLines by vm.logLines.collectAsStateWithLifecycle()
+    val currentLevel by vm.currentLogLevel.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
     // Enter log mode on the device when this screen is shown

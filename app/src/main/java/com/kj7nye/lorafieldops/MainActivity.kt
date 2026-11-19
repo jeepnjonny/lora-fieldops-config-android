@@ -1,5 +1,6 @@
 package com.kj7nye.lorafieldops
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.content.Intent
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
@@ -26,7 +27,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -96,8 +96,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MainNavigation(vm: ConfigViewModel) {
     val navController = rememberNavController()
-    val connState by vm.connectionState.collectAsState()
-    val snackMsg by vm.snackMessage.collectAsState()
+    val connState by vm.connectionState.collectAsStateWithLifecycle()
+    val snackMsg by vm.snackMessage.collectAsStateWithLifecycle()
     val snackHost = remember { SnackbarHostState() }
     var showImportExport by remember { mutableStateOf(false) }
     val backStack by navController.currentBackStackEntryAsState()

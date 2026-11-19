@@ -1,5 +1,6 @@
 package com.kj7nye.lorafieldops.ui
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -40,7 +41,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +53,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.kj7nye.lorafieldops.model.SMARTBEACON_CUSTOM
 import com.kj7nye.lorafieldops.model.SMARTBEACON_LABELS
 import com.kj7nye.lorafieldops.model.SmartBeaconLimits
 import com.kj7nye.lorafieldops.model.BEACON_PATH_OPTIONS
@@ -100,10 +101,10 @@ private val MIC_E_OPTIONS = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConfigScreen(vm: ConfigViewModel) {
-    val cfg by vm.config.collectAsState()
-    val dirty by vm.dirty.collectAsState()
-    val fwVersion by vm.firmwareVersion.collectAsState()
-    val fieldError by vm.lastError.collectAsState()
+    val cfg by vm.config.collectAsStateWithLifecycle()
+    val dirty by vm.dirty.collectAsStateWithLifecycle()
+    val fwVersion by vm.firmwareVersion.collectAsStateWithLifecycle()
+    val fieldError by vm.lastError.collectAsStateWithLifecycle()
     var showDiscardDialog by remember { mutableStateOf(false) }
 
     // Feature floors verified against tagged firmware source — see FirmwareVersion.kt.
@@ -210,7 +211,7 @@ fun ConfigScreen(vm: ConfigViewModel) {
                     selected = c.beacons[0].smartBeaconSetting,
                 ) { vm.setSmartBeaconSetting(it) }
 
-                if (c.beacons[0].smartBeaconSetting == 4) {
+                if (c.beacons[0].smartBeaconSetting == SMARTBEACON_CUSTOM) {
                     // Custom parameters only visible when Custom profile selected
                     HorizontalDivider()
                     Text("Custom parameters", style = MaterialTheme.typography.labelMedium)
@@ -300,7 +301,7 @@ fun ConfigScreen(vm: ConfigViewModel) {
                             "USB and TCP), for the coverage logger. Tracker role only. Some KISS apps " +
                             "show the extra frames, so leave it off unless you log coverage.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (k.rssi && c.deviceRole != DeviceRole.TRACKER)
+                        color = if (k.rssi && c.deviceRole != DeviceRole.TRACKER.code)
                             MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -393,8 +394,8 @@ fun ConfigScreen(vm: ConfigViewModel) {
                         OutlinedButton(onClick = { vm.addWifiStaNetwork("") }) { Text("+ Add network") }
                     }
 
-                    val scanning by vm.wifiScanning.collectAsState()
-                    val scanResults by vm.wifiScanResults.collectAsState()
+                    val scanning by vm.wifiScanning.collectAsStateWithLifecycle()
+                    val scanResults by vm.wifiScanResults.collectAsStateWithLifecycle()
                     OutlinedButton(onClick = { vm.scanWifiNetworks() }, enabled = !scanning) {
                         Text(if (scanning) "Scanning… (blocks the device a few seconds)" else "Scan for networks")
                     }
@@ -458,30 +459,22 @@ fun ConfigScreen(vm: ConfigViewModel) {
             Section("Role & GPS") {
                 DropdownField(
                     label = "Device role",
-                    options = listOf(0 to "Tracker", 1 to "iGate", 2 to "Digipeater"),
-                    selected = c.deviceRole,
+                    options = DeviceRole.entries.map { it to it.label },
+                    selected = DeviceRole.fromCode(c.deviceRole),
                 ) { vm.setDeviceRole(it) }
                 DropdownField(
                     label = "GPS source",
-                    options = listOf(
-                        0 to GpsSource.label(0),
-                        1 to GpsSource.label(1),
-                        2 to GpsSource.label(2),
-                    ),
-                    selected = c.gpsSource,
+                    options = GpsSource.entries.map { it to it.label },
+                    selected = GpsSource.fromCode(c.gpsSource),
                 ) { vm.setGpsSource(it) }
                 DropdownField(
                     label = "Digi mode",
-                    options = listOf(
-                        0 to DigiMode.label(0),
-                        1 to DigiMode.label(1),
-                        2 to DigiMode.label(2),
-                    ),
-                    selected = c.other.digiMode,
+                    options = DigiMode.entries.map { it to it.label },
+                    selected = DigiMode.fromCode(c.other.digiMode),
                 ) { vm.setDigiMode(it) }
             }
 
-            if (c.gpsSource == 1) {
+            if (c.gpsSource == GpsSource.FIXED.code) {
                 Section("Fixed Position") {
                     val fp = c.fixedPosition
                     FloatField("Latitude (dd.dddddd)", fp.latitude) { vm.setFixedLat(it) }
@@ -489,7 +482,7 @@ fun ConfigScreen(vm: ConfigViewModel) {
                     FloatField("Elevation (m)", fp.elevation) { vm.setFixedElev(it) }
 
                     val context = LocalContext.current
-                    val locating by vm.locationFetching.collectAsState()
+                    val locating by vm.locationFetching.collectAsStateWithLifecycle()
                     val locationPermissionLauncher = rememberLauncherForActivityResult(
                         ActivityResultContracts.RequestPermission(),
                     ) { granted ->

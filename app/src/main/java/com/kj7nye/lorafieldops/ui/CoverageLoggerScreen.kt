@@ -1,5 +1,6 @@
 package com.kj7nye.lorafieldops.ui
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -29,7 +30,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,12 +57,12 @@ fun CoverageLoggerScreen(
     vm: LoggerViewModel = viewModel(),
 ) {
     val context = LocalContext.current
-    val settings by vm.settings.collectAsState()
-    val status by vm.status.collectAsState()
-    val runtime by vm.runtime.collectAsState()
-    val queued by vm.queued.collectAsState()
-    val uploading by vm.uploading.collectAsState()
-    val tracker by vm.tracker.collectAsState()
+    val settings by vm.settings.collectAsStateWithLifecycle()
+    val status by vm.status.collectAsStateWithLifecycle()
+    val runtime by vm.runtime.collectAsStateWithLifecycle()
+    val queued by vm.queued.collectAsStateWithLifecycle()
+    val uploading by vm.uploading.collectAsStateWithLifecycle()
+    val tracker by vm.tracker.collectAsStateWithLifecycle()
 
     // Text fields are edited locally and applied with Save, so a half-typed key or
     // callsign never reaches the logger. Re-seeded when the stored value changes.

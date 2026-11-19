@@ -1,5 +1,6 @@
 package com.kj7nye.lorafieldops.ui
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -29,7 +30,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,8 +48,8 @@ fun ConnectionScreen(
     onOpenLogger: () -> Unit,
     onConnected: () -> Unit,
 ) {
-    val state by vm.connectionState.collectAsState()
-    val loggerRuntime by vm.coverageLogger.runtime.collectAsState()
+    val state by vm.connectionState.collectAsStateWithLifecycle()
+    val loggerRuntime by vm.coverageLogger.runtime.collectAsStateWithLifecycle()
     var devices by remember { mutableStateOf<List<UsbSerialDriver>>(emptyList()) }
 
     // Refresh device list whenever screen is shown or connection state changes
@@ -179,9 +179,9 @@ private fun requestPermissionAndConnect(vm: ConfigViewModel, driver: UsbSerialDr
 @Composable
 private fun BluetoothSection(vm: ConfigViewModel) {
     val context = LocalContext.current
-    val trackers by vm.bleScanner.results.collectAsState()
-    val scanning by vm.bleScanner.scanning.collectAsState()
-    val scanError by vm.bleScanner.error.collectAsState()
+    val trackers by vm.bleScanner.results.collectAsStateWithLifecycle()
+    val scanning by vm.bleScanner.scanning.collectAsStateWithLifecycle()
+    val scanError by vm.bleScanner.error.collectAsStateWithLifecycle()
     var permissionDenied by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(

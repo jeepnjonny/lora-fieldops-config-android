@@ -1,5 +1,6 @@
 package com.kj7nye.lorafieldops.ui
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.content.ClipData
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -31,7 +32,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,7 +47,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatusScreen(vm: ConfigViewModel) {
-    val statusLines by vm.statusLines.collectAsState()
+    val statusLines by vm.statusLines.collectAsStateWithLifecycle()
     var showOtaDfuDialog by remember { mutableStateOf(false) }
 
     // Load version on entry
@@ -138,8 +138,8 @@ fun StatusScreen(vm: ConfigViewModel) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Actions", style = MaterialTheme.typography.titleMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { vm.txCommentNow() }) { Text("Send comment now") }
-                    OutlinedButton(onClick = { vm.txStatusNow() }) { Text("Send status now") }
+                    OutlinedButton(onClick = { vm.txNow(TxBeacon.COMMENT) }) { Text("Send comment now") }
+                    OutlinedButton(onClick = { vm.txNow(TxBeacon.STATUS) }) { Text("Send status now") }
                 }
                 Button(onClick = { showOtaDfuDialog = true }) { Text("Enter OTA DFU mode") }
                 Text(

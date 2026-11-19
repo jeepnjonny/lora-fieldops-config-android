@@ -12,7 +12,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -24,7 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -139,16 +142,13 @@ private fun ExportTab(vm: ConfigViewModel) {
 @Composable
 private fun ImportTab(vm: ConfigViewModel, onSuccess: () -> Unit) {
     var pasteText by remember { mutableStateOf("") }
-    var statusText by remember { mutableStateOf("") }
-    val snack by vm.snackMessage.collectAsState()
+    val state by vm.importState.collectAsStateWithLifecycle()
 
-    LaunchedEffect(snack) {
-        snack?.let { msg ->
-            statusText = msg
-            if (msg.contains("successful")) onSuccess()
-            vm.clearSnack()
-        }
+    LaunchedEffect(Unit) { vm.clearImportState() }
+    LaunchedEffect(state) {
+        if (state is ImportState.Done) onSuccess()
     }
+    val sending = state is ImportState.Sending
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
@@ -164,26 +164,21 @@ private fun ImportTab(vm: ConfigViewModel, onSuccess: () -> Unit) {
                 .heightIn(min = 160.dp),
             minLines = 8,
         )
-        if (statusText.isNotEmpty()) {
-            Text(
-                statusText,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (statusText.contains("failed") || statusText.contains("timed") ||
-                        statusText.contains("Invalid"))
-                    MaterialTheme.colorScheme.error
-                else
-                    MaterialTheme.colorScheme.primary,
-            )
+        (state as? ImportState.Failed)?.let {
+            Text(it.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
         }
         Button(
-            onClick = {
-                if (pasteText.isNotBlank()) {
-                    statusText = "Sending…"
-                    vm.importJson(pasteText)
-                }
-            },
-            enabled = pasteText.isNotBlank(),
+            onClick = { vm.importJson(pasteText) },
+            enabled = pasteText.isNotBlank() && !sending,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Send to device") }
+        ) {
+            if (sending) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Sending…")
+            } else {
+                Text("Send to device")
+            }
+        }
     }
 }
