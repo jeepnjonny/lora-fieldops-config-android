@@ -22,7 +22,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -35,9 +35,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
+import android.content.ClipData
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -57,7 +58,7 @@ fun ImportExportSheet(vm: ConfigViewModel, onDismiss: () -> Unit) {
             Text("Import / Export", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
 
-            TabRow(selectedTabIndex = tab) {
+            PrimaryTabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Export") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Import") })
             }
@@ -77,7 +78,7 @@ fun ImportExportSheet(vm: ConfigViewModel, onDismiss: () -> Unit) {
 
 @Composable
 private fun ExportTab(vm: ConfigViewModel) {
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
     val context = LocalContext.current
     var json by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
@@ -110,7 +111,9 @@ private fun ExportTab(vm: ConfigViewModel) {
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
-                    onClick = { clipboard.setText(AnnotatedString(json)) },
+                    onClick = {
+                        scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("tracker_conf.json", json))) }
+                    },
                     modifier = Modifier.weight(1f),
                 ) { Text("Copy") }
                 Button(

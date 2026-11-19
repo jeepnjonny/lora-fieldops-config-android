@@ -649,7 +649,7 @@ private fun Section(
     initiallyExpanded: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    var expanded by rememberSaveable(key = "section:$title") { mutableStateOf(initiallyExpanded) }
+    var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column {
             Row(

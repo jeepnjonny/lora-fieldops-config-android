@@ -47,7 +47,7 @@ interface LogQueueDao {
     fun countFlow(): Flow<Int>
 }
 
-@Database(entities = [LogQueueRow::class], version = 1, exportSchema = false)
+@Database(entities = [LogQueueRow::class], version = 1, exportSchema = true)
 abstract class LogQueueDb : RoomDatabase() {
     abstract fun dao(): LogQueueDao
 
