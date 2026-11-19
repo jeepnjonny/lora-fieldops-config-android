@@ -96,6 +96,13 @@ jobs:
         run: |
           app=iosApp/build/Build/Products/Release-iphoneos/LoRaFieldOps.app
           test -d "$app"
+          # The APRS symbol sheets are Compose resources; a missing one crashes the Config screen.
+          for i in 0 1 2; do
+            find "$app" -name "aprs_symbols_$i.png" | grep -q . || { echo "::error::aprs_symbols_$i.png missing from the app"; exit 1; }
+          done
+          for key in CFBundleIdentifier CFBundleShortVersionString UIBackgroundModes NSBluetoothAlwaysUsageDescription; do
+            /usr/libexec/PlistBuddy -c "Print :$key" "$app/Info.plist"
+          done
           rm -rf Payload && mkdir Payload && cp -R "$app" Payload/
           name="LoRaFieldOpsConfig-${TAG:-$APP_VERSION}-unsigned.ipa"
           zip -qry "$name" Payload
