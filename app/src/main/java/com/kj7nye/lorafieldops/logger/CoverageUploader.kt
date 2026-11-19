@@ -9,7 +9,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -20,8 +19,11 @@ data class QueuedEntry(val id: Long, val device: String, val entry: CoverageEntr
 
 /** The upload side's view of the offline queue (Room in the app, a list in tests). */
 interface UploadQueue {
-    /** Oldest entries, all for the same device (the device of the oldest entry), at most [limit]. */
-    suspend fun nextBatch(limit: Int): List<QueuedEntry>
+    /**
+     * Oldest entries, all for the same device (the device of the oldest entry not in
+     * [exclude]), at most [limit].
+     */
+    suspend fun nextBatch(limit: Int, exclude: Set<String> = emptySet()): List<QueuedEntry>
     suspend fun delete(ids: List<Long>)
 }
 
@@ -79,7 +81,12 @@ private val replyJson = Json { ignoreUnknownKeys = true; isLenient = true }
  *
  * - 200: the batch is deleted from the queue, including entries the server listed in
  *   `errors` (resending them would fail the same way); those errors are reported.
- * - 401 / 404: [UploadResult.Blocked]; the caller stops uploading until settings change.
+ * - 200 with a body that isn't the server's JSON (captive portal): [UploadResult.Retry],
+ *   nothing deleted.
+ * - 401: [UploadResult.Blocked]; the caller stops uploading until settings change.
+ * - 404 / other 4xx for one device: that device is skipped for the rest of the pass and
+ *   reported; other devices still upload. If nothing could be sent, 404 is
+ *   [UploadResult.Blocked] and other 4xx are [UploadResult.Retry].
  * - 413 / 422: batch size is halved and the same entries are tried again. A single
  *   entry still rejected at size 1 is dropped and reported, so it can't wedge the queue.
  * - network errors, 5xx, 429, anything else: [UploadResult.Retry], queue untouched.
@@ -104,11 +111,17 @@ class CoverageUploader(
 
         var sent = 0; var accepted = 0; var duplicates = 0; var ignored = 0
         val errors = mutableListOf<String>()
+        // Devices the server refused this pass. Their entries stay queued, and the
+        // other devices' entries still go out.
+        val parked = mutableSetOf<String>()
+        var parkedMessage: String? = null
+        var only404 = true
         while (true) {
-            val batch = queue.nextBatch(batchSize)
+            val batch = queue.nextBatch(batchSize, parked)
             if (batch.isEmpty()) break
+            val device = batch.first().device
             val body = wireJson.encodeToString(WireRequest.serializer(), WireRequest(
-                device = batch.first().device,
+                device = device,
                 app = appId,
                 entries = batch.map { it.entry.toWire() },
             ))
@@ -119,8 +132,13 @@ class CoverageUploader(
             }
             when {
                 code == 200 -> {
+                    // Anything that isn't our JSON (e.g. a Wi-Fi login page answering 200)
+                    // means the batch never reached the server: keep it.
                     val r = runCatching { replyJson.decodeFromString(DeviceLogResponse.serializer(), reply) }
-                        .getOrDefault(DeviceLogResponse())
+                        .getOrNull()
+                        ?: return UploadResult.Retry(
+                            "Unexpected reply from the website (not the coverage server?). " +
+                            "If you're on Wi-Fi that needs a sign-in page, sign in first.")
                     queue.delete(batch.map { it.id })
                     sent += batch.size
                     accepted += r.accepted; duplicates += r.duplicates; ignored += r.ignored
@@ -131,9 +149,12 @@ class CoverageUploader(
                 }
                 code == 401 -> return UploadResult.Blocked(code,
                     "Upload key rejected (401). Check the key, or make a new one on the website: Account tab, Upload keys.")
-                code == 404 -> return UploadResult.Blocked(code,
-                    "Device \"${batch.first().device}\" isn't one of your approved devices on the website (404). " +
-                    "Register it there, or fix the device callsign here.")
+                code == 404 -> {
+                    parked += device
+                    parkedMessage = "Device \"$device\" isn't one of your approved devices on the website (404). " +
+                        "Register it there, or fix the device callsign here."
+                    errors += parkedMessage
+                }
                 code == 413 || code == 422 -> {
                     if (batch.size == 1) {
                         queue.delete(batch.map { it.id })
@@ -145,8 +166,20 @@ class CoverageUploader(
                 }
                 code in 300..399 -> return UploadResult.Retry(
                     "Website address redirects ($code). Use the exact https:// address of the site.")
+                code in 400..499 && code != 408 && code != 429 -> {
+                    // A request problem specific to this device's entries: park it so the
+                    // rest of the queue isn't stuck behind it; it's retried next pass.
+                    parked += device
+                    only404 = false
+                    parkedMessage = "Server refused entries for \"$device\" ($code${serverMessage(reply).let { if (it.isEmpty()) "" else ": $it" }})"
+                    errors += parkedMessage
+                }
                 else -> return UploadResult.Retry("Server error $code${serverMessage(reply).let { if (it.isEmpty()) "" else ": $it" }}")
             }
+        }
+        if (parked.isNotEmpty() && sent == 0) {
+            val msg = if (parked.size == 1) parkedMessage!! else errors.joinToString("\n")
+            return if (only404) UploadResult.Blocked(404, msg) else UploadResult.Retry(msg)
         }
         UploadResult.Done(sent, accepted, duplicates, ignored, errors)
     }

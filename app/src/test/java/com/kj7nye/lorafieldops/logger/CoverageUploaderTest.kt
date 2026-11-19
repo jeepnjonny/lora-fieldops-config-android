@@ -29,8 +29,8 @@ class CoverageUploaderTest {
         val rows = mutableListOf<QueuedEntry>()
         private var nextId = 1L
         fun add(device: String, entry: CoverageEntry) { rows += QueuedEntry(nextId++, device, entry) }
-        override suspend fun nextBatch(limit: Int): List<QueuedEntry> {
-            val device = rows.firstOrNull()?.device ?: return emptyList()
+        override suspend fun nextBatch(limit: Int, exclude: Set<String>): List<QueuedEntry> {
+            val device = rows.firstOrNull { it.device !in exclude }?.device ?: return emptyList()
             return rows.filter { it.device == device }.take(limit)
         }
         override suspend fun delete(ids: List<Long>) { rows.removeAll { it.id in ids } }
@@ -128,6 +128,42 @@ class CoverageUploaderTest {
         val r = uploader.uploadAll(baseUrl, "acv_k")
         assertTrue(r is UploadResult.Blocked && r.code == 404)
         assertEquals(1, queue.rows.size)
+    }
+
+    @Test
+    fun unknownDeviceDoesNotBlockOtherDevices() = runBlocking {
+        fill(2, "K7OLD-9"); fill(3, "K7ABC-9")
+        responder = { r ->
+            if (r.json["device"]!!.jsonPrimitive.content == "K7OLD-9") 404 to ""
+            else 200 to """{"accepted":${r.entryCount}}"""
+        }
+        val r = uploader.uploadAll(baseUrl, "acv_k") as UploadResult.Done
+        assertEquals(3, r.sent)
+        assertEquals(listOf("K7OLD-9", "K7OLD-9"), queue.rows.map { it.device })
+        assertTrue(r.errors.single().contains("K7OLD-9"))
+    }
+
+    @Test
+    fun otherClientErrorParksDeviceAndRetries() = runBlocking {
+        fill(2, "K7BAD-9"); fill(1, "K7ABC-9")
+        responder = { r ->
+            if (r.json["device"]!!.jsonPrimitive.content == "K7BAD-9") 403 to """{"error":"not yours"}"""
+            else 200 to """{"accepted":1}"""
+        }
+        val r = uploader.uploadAll(baseUrl, "acv_k") as UploadResult.Done
+        assertEquals(1, r.sent)
+        assertEquals(2, queue.rows.size)
+        responder = { 403 to """{"error":"not yours"}""" }
+        val again = uploader.uploadAll(baseUrl, "acv_k")
+        assertTrue(again is UploadResult.Retry && again.message.contains("not yours"))
+    }
+
+    @Test
+    fun captivePortalReplyKeepsQueue() = runBlocking {
+        fill(3)
+        responder = { 200 to "<html><body>Please sign in to Hotel Wi-Fi</body></html>" }
+        assertTrue(uploader.uploadAll(baseUrl, "acv_k") is UploadResult.Retry)
+        assertEquals(3, queue.rows.size)
     }
 
     @Test
