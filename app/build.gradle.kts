@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.kj7nye.lorafieldops"
+    namespace = "io.github.jeepnjonny.lorafieldops"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.kj7nye.lorafieldops"
+        applicationId = "io.github.jeepnjonny.lorafieldops"
         minSdk = 26
         targetSdk = 37
         // Overridden by the release workflow via -PreleaseVersionCode/-PreleaseVersionName,

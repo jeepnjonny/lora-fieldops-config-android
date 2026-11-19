@@ -13,7 +13,7 @@ kotlin {
     }
 
     android {
-        namespace = "com.kj7nye.lorafieldops.shared"
+        namespace = "io.github.jeepnjonny.lorafieldops.shared"
         compileSdk = 37
         minSdk = 26
         withHostTest {}
@@ -56,6 +56,6 @@ kotlin {
 }
 
 compose.resources {
-    packageOfResClass = "com.kj7nye.lorafieldops.resources"
+    packageOfResClass = "io.github.jeepnjonny.lorafieldops.resources"
     publicResClass = false
 }
