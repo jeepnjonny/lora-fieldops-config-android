@@ -147,7 +147,6 @@ private fun ImportTab(vm: ConfigViewModel, onSuccess: () -> Unit) {
     var pasteText by remember { mutableStateOf("") }
     val state by vm.importState.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) { vm.clearImportState() }
     LaunchedEffect(state) {
         if (state is ImportState.Done) onSuccess()
     }

@@ -155,7 +155,7 @@ private fun MainNavigation(vm: ConfigViewModel) {
                         }
                     },
                     actions = {
-                        IconButton(onClick = { showImportExport = true }) {
+                        IconButton(onClick = { vm.clearImportState(); showImportExport = true }) {
                             Icon(Icons.Default.ImportExport, contentDescription = "Import or export config")
                         }
                         IconButton(onClick = { if (dirty) confirmDisconnect = true else vm.disconnect() }) {

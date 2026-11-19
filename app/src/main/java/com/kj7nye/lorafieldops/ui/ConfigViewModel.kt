@@ -559,7 +559,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Resets the import sheet's state; called when the sheet opens. */
+    /** Resets the import sheet's state; call before opening the sheet. */
     fun clearImportState() {
         if (_importState.value !is ImportState.Sending) _importState.value = ImportState.Idle
     }
@@ -604,9 +604,11 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun readStatus(group: StatusGroup, block: suspend (ProtocolHandler) -> Unit) {
         val proto = protocol ?: return
-        var started = false
-        _statusLoading.update { if (group in it) it else { started = true; it + group } }
-        if (!started) return
+        while (true) {
+            val current = _statusLoading.value
+            if (group in current) return
+            if (_statusLoading.compareAndSet(current, current + group)) break
+        }
         viewModelScope.launch {
             try { block(proto) } finally { _statusLoading.update { it - group } }
         }
