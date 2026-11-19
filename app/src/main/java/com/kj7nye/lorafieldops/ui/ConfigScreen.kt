@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,36 +12,41 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,17 +55,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.kj7nye.lorafieldops.model.SMARTBEACON_LABELS
-import com.kj7nye.lorafieldops.model.SmartBeaconLimits
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kj7nye.lorafieldops.model.BEACON_PATH_OPTIONS
 import com.kj7nye.lorafieldops.model.DeviceRole
 import com.kj7nye.lorafieldops.model.DigiMode
 import com.kj7nye.lorafieldops.model.FirmwareVersion
 import com.kj7nye.lorafieldops.model.GpsSource
+import com.kj7nye.lorafieldops.model.SMARTBEACON_CUSTOM
+import com.kj7nye.lorafieldops.model.SMARTBEACON_LABELS
+import com.kj7nye.lorafieldops.model.SmartBeaconLimits
+import com.kj7nye.lorafieldops.model.TrackerConfig
+import java.util.Locale
 
 // Board-agnostic curated set: 20 dBm is the safe ceiling on every supported
 // board — bare SX1262 boards (T114, V3.2) clamp to +22 dBm chip output
@@ -97,14 +112,14 @@ private val MIC_E_OPTIONS = listOf(
     "7" to "7 – Emergency",
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+private val Boolean.onOff get() = if (this) "On" else "Off"
+
 @Composable
 fun ConfigScreen(vm: ConfigViewModel) {
-    val cfg by vm.config.collectAsState()
-    val dirty by vm.dirty.collectAsState()
-    val fwVersion by vm.firmwareVersion.collectAsState()
-    val fieldError by vm.lastError.collectAsState()
-    var showDiscardDialog by remember { mutableStateOf(false) }
+    val cfg by vm.config.collectAsStateWithLifecycle()
+    val saved by vm.savedConfig.collectAsStateWithLifecycle()
+    val fwVersion by vm.firmwareVersion.collectAsStateWithLifecycle()
+    val fieldError by vm.lastError.collectAsStateWithLifecycle()
 
     // Feature floors verified against tagged firmware source — see FirmwareVersion.kt.
     // Version unknown (not yet read, or unparseable) fails open for features whose
@@ -116,422 +131,506 @@ fun ConfigScreen(vm: ConfigViewModel) {
     val supportsRemoteConfig = fwVersion?.let { it >= FirmwareVersion.MIN_REMOTE_CONFIG } ?: true
     val fwHint = fwVersion?.let { " (connected firmware: v$it)" } ?: ""
 
-    if (cfg == null) {
+    val c = cfg
+    if (c == null) {
         Column(
             Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
-        ) { Text("Loading configuration…") }
+        ) {
+            CircularProgressIndicator()
+            Spacer(Modifier.height(12.dp))
+            Text("Loading configuration…", style = MaterialTheme.typography.bodyLarge)
+        }
         return
     }
-    val c = cfg!!
+    /** True when the part of the config [pick] selects differs from what's saved on the tracker. */
+    fun edited(pick: (TrackerConfig) -> Any?): Boolean = saved?.let { pick(c) != pick(it) } ?: false
 
-    // Warn user before NOCALL TX
-    val isNocall = c.beacons[0].callsign.startsWith("NOCALL", ignoreCase = true)
+    val b = c.beacons[0]
+    val isNocall = b.callsign.startsWith("NOCALL", ignoreCase = true)
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("Configuration")
-                        if (dirty) Text(
-                            "Unsaved changes",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (isNocall) WarningBanner("Callsign is NOCALL — transmit is blocked by firmware")
+
+        fieldError?.let { err ->
+            WarningBanner("\"${err.field}\" was rejected: ${err.message}") {
+                TextButton(onClick = { vm.clearFieldError() }) { Text("Dismiss") }
+            }
+        }
+
+        // ---- Main settings ------------------------------------------------------
+
+        // What the tracker beacons as: CALLSIGN, or CALLSIGN:OBJECT when a tactical name is set.
+        val identity = if (b.tacticalCallsign.isBlank()) b.callsign else "${b.callsign}:${b.tacticalCallsign}"
+        Section(
+            "Beacon",
+            summaryContent = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(identity, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                    AprsSymbolIcon(b.overlay, b.symbol, Modifier.padding(horizontal = 6.dp), size = 20.dp)
+                    if (b.comment.isNotBlank()) {
+                        Text(
+                            b.comment,
+                            modifier = Modifier.weight(1f, fill = false),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
-                },
-            )
-        },
-        floatingActionButton = {
-            if (dirty) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ExtendedFloatingActionButton(
-                        text = { Text("Discard") },
-                        icon = { Icon(Icons.Default.Undo, null) },
-                        onClick = { showDiscardDialog = true },
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    ExtendedFloatingActionButton(
-                        text = { Text("Save") },
-                        icon = { Icon(Icons.Default.Save, null) },
-                        onClick = { vm.save() },
-                    )
                 }
-            }
-        },
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            },
+            edited = edited { it.beacons[0].copy(smartBeaconActive = false, smartBeaconSetting = 0) },
+            initiallyExpanded = true,
         ) {
-            if (isNocall) {
-                Card(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    label = "⚠ Callsign is NOCALL — transmit is blocked by firmware",
-                )
-            }
-
-            fieldError?.let { err ->
-                FieldErrorBanner(err) { vm.clearFieldError() }
-            }
-
-            Section("Beacon") {
-                LabeledTextField("Callsign", c.beacons[0].callsign) {
-                    vm.setCallsign(it)
+            LabeledTextField("Callsign", b.callsign) { vm.setCallsign(it) }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LabeledTextField("Symbol (1 char)", b.symbol) {
+                        singleCharEdit(b.symbol, it)?.let(vm::setSymbol)
+                    }
+                    LabeledTextField("Overlay / table (1 char)", b.overlay) {
+                        singleCharEdit(b.overlay, it)?.let(vm::setOverlay)
+                    }
                 }
-                LabeledTextField("Symbol (1 char)", c.beacons[0].symbol) {
-                    singleCharEdit(c.beacons[0].symbol, it)?.let(vm::setSymbol)
-                }
-                LabeledTextField("Overlay (1 char)", c.beacons[0].overlay) {
-                    singleCharEdit(c.beacons[0].overlay, it)?.let(vm::setOverlay)
-                }
-                DropdownField("Mic-E", MIC_E_OPTIONS, c.beacons[0].micE) { vm.setMicE(it) }
-                LabeledTextField("Comment", c.beacons[0].comment) { vm.setComment(it) }
-                LabeledTextField("Status", c.beacons[0].status) { vm.setStatus(it) }
-                LabeledTextField("Tactical callsign (≤9 chars)", c.beacons[0].tacticalCallsign) {
-                    vm.setTacticalCallsign(it)
+                // Live preview of the map icon these two characters select.
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    AprsSymbolIcon(b.overlay, b.symbol, size = 48.dp)
+                    Text("${b.overlay}${b.symbol}", style = MaterialTheme.typography.labelMedium)
                 }
             }
+            DropdownField("Mic-E", MIC_E_OPTIONS, b.micE) { vm.setMicE(it) }
+            LabeledTextField("Comment", b.comment) { vm.setComment(it) }
+            LabeledTextField("Status", b.status) { vm.setStatus(it) }
+            LabeledTextField("Tactical callsign (≤9 chars)", b.tacticalCallsign) { vm.setTacticalCallsign(it) }
+        }
 
-            Section("SmartBeacon") {
-                SwitchRow("SmartBeacon active", c.beacons[0].smartBeaconActive) {
-                    vm.setSmartBeaconActive(it)
+        Section(
+            "SmartBeacon",
+            summary = if (b.smartBeaconActive) "On · ${SMARTBEACON_LABELS.getOrElse(b.smartBeaconSetting) { "?" }}" else "Off",
+            edited = edited { Triple(it.beacons[0].smartBeaconActive, it.beacons[0].smartBeaconSetting, it.customSmartBeacon) },
+        ) {
+            SwitchRow("SmartBeacon active", b.smartBeaconActive) { vm.setSmartBeaconActive(it) }
+            DropdownField(
+                label = "Profile",
+                options = SMARTBEACON_LABELS.mapIndexed { i, l -> i to l },
+                selected = b.smartBeaconSetting,
+            ) { vm.setSmartBeaconSetting(it) }
+
+            if (b.smartBeaconSetting == SMARTBEACON_CUSTOM) {
+                // Custom parameters only visible when Custom profile selected
+                HorizontalDivider()
+                Text("Custom parameters", style = MaterialTheme.typography.labelLarge)
+                val sb = c.customSmartBeacon
+                IntField("Slow rate (sec)", sb.slowRate, SmartBeaconLimits.SLOW_RATE) { vm.setSmartSlowRate(it) }
+                IntField("Slow speed (km/h)", sb.slowSpeed, SmartBeaconLimits.SLOW_SPEED) { vm.setSmartSlowSpeed(it) }
+                IntField("Fast rate (sec)", sb.fastRate, SmartBeaconLimits.FAST_RATE) { vm.setSmartFastRate(it) }
+                IntField("Fast speed (km/h)", sb.fastSpeed, SmartBeaconLimits.FAST_SPEED) { vm.setSmartFastSpeed(it) }
+                IntField("Min turn (deg)", sb.turnMinDeg, SmartBeaconLimits.TURN_MIN_DEG) { vm.setSmartTurnMinDeg(it) }
+                IntField("Turn slope", sb.turnSlope, SmartBeaconLimits.TURN_SLOPE) { vm.setSmartTurnSlope(it) }
+                // Hidden on firmware that predates turnMinTime (key absent from its config).
+                sb.turnMinTime?.let { minTime ->
+                    IntField("Min turn time (sec)", minTime, SmartBeaconLimits.TURN_MIN_TIME) { vm.setSmartTurnMinTime(it) }
                 }
-                DropdownField(
-                    label = "Profile",
-                    options = SMARTBEACON_LABELS.mapIndexed { i, l -> i to l },
-                    selected = c.beacons[0].smartBeaconSetting,
-                ) { vm.setSmartBeaconSetting(it) }
+            }
+        }
 
-                if (c.beacons[0].smartBeaconSetting == 4) {
-                    // Custom parameters only visible when Custom profile selected
-                    HorizontalDivider()
-                    Text("Custom parameters", style = MaterialTheme.typography.labelMedium)
-                    val sb = c.customSmartBeacon
-                    IntField("Slow rate (sec)", sb.slowRate, SmartBeaconLimits.SLOW_RATE) { vm.setSmartSlowRate(it) }
-                    IntField("Slow speed (km/h)", sb.slowSpeed, SmartBeaconLimits.SLOW_SPEED) { vm.setSmartSlowSpeed(it) }
-                    IntField("Fast rate (sec)", sb.fastRate, SmartBeaconLimits.FAST_RATE) { vm.setSmartFastRate(it) }
-                    IntField("Fast speed (km/h)", sb.fastSpeed, SmartBeaconLimits.FAST_SPEED) { vm.setSmartFastSpeed(it) }
-                    IntField("Min turn (deg)", sb.turnMinDeg, SmartBeaconLimits.TURN_MIN_DEG) { vm.setSmartTurnMinDeg(it) }
-                    IntField("Turn slope", sb.turnSlope, SmartBeaconLimits.TURN_SLOPE) { vm.setSmartTurnSlope(it) }
-                    // Hidden on firmware that predates turnMinTime (key absent from its config).
-                    sb.turnMinTime?.let { minTime ->
-                        IntField("Min turn time (sec)", minTime, SmartBeaconLimits.TURN_MIN_TIME) { vm.setSmartTurnMinTime(it) }
+        val o = c.other
+        Section(
+            "Beaconing",
+            summary = "Path ${o.beaconPath.ifEmpty { "DIRECT" }} · every ${o.nonSmartBeaconRateSec} s without SmartBeacon",
+            edited = edited { it.other.copy(cadActive = false, digiMode = 0) },
+        ) {
+            DropdownField(
+                label = "Beacon path",
+                options = BEACON_PATH_OPTIONS,
+                // Legacy configs stored "" for no-repeat; normalize to the explicit DIRECT option.
+                selected = o.beaconPath.ifEmpty { "DIRECT" },
+            ) { vm.setBeaconPath(it) }
+            IntField("Non-smart rate (sec)", o.nonSmartBeaconRateSec) { vm.setNonSmartRate(it) }
+            IntField("Comment after N beacons", o.sendCommentAfterXBeacons) { vm.setSendCommentAfter(it) }
+            SwitchRow("Send altitude", o.sendAltitude) { vm.setSendAltitude(it) }
+            SwitchRow("Send speed/course", o.sendSpeedCourse) { vm.setSendSpeedCourse(it) }
+        }
+
+        val l = c.lora[0]
+        Section(
+            "LoRa",
+            summary = String.format(Locale.US, "%.3f MHz", l.frequency / 1e6) +
+                " · SF${l.spreadingFactor} · " +
+                (LORA_BW_OPTIONS.firstOrNull { it.first == l.signalBandwidth }?.second ?: "${l.signalBandwidth} Hz") +
+                " · ${l.power} dBm",
+            edited = edited { it.lora to it.other.cadActive },
+        ) {
+            IntField("Frequency (Hz)", l.frequency.toInt()) { vm.setLoraFreq(it.toLong()) }
+            LabeledSlider("Spreading Factor", l.spreadingFactor.toFloat(), 7f, 12f, steps = 4) {
+                vm.setLoraSf(it.toInt())
+            }
+            DropdownField("Bandwidth", LORA_BW_OPTIONS, l.signalBandwidth) { vm.setLoraBw(it) }
+            LabeledSlider("Coding Rate (4/x)", l.codingRate4.toFloat(), 5f, 8f, steps = 2) {
+                vm.setLoraCr(it.toInt())
+            }
+            DropdownField("TX Power (dBm)", TX_POWER_OPTIONS.map { it to "$it dBm" }, l.power) { vm.setLoraPower(it) }
+            HelpText(
+                "Actual RF output depends on your board — only 20 dBm on 1 W boards " +
+                    "(T-Beam 1W, LoRanger V1) is a verified datasheet figure; other " +
+                    "1 W-board values are approximate.",
+            )
+            Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                Row(Modifier.fillMaxWidth()) {
+                    Text("Setting", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                    Text("T114 / V3.2", Modifier.weight(2f), style = MaterialTheme.typography.labelLarge)
+                    Text("1 W boards", Modifier.weight(2f), style = MaterialTheme.typography.labelLarge)
+                }
+                TX_POWER_TABLE.forEach { row ->
+                    Row(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
+                        Text("${row.setting} dBm", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        Text(row.chipOnly, Modifier.weight(2f), style = MaterialTheme.typography.bodySmall)
+                        Text(row.oneWatt, Modifier.weight(2f), style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
+            SwitchRow("Channel Activity Detection (CAD, listen before TX)", o.cadActive) { vm.setCadActive(it) }
+            HelpText(
+                "Waits for a clear channel plus a short random backoff before each TX; " +
+                    "transmits anyway after 10 s of a busy channel.",
+            )
+        }
 
-            Section("LoRa") {
-                val l = c.lora[0]
-                IntField("Frequency (Hz)", l.frequency.toInt()) { vm.setLoraFreq(it.toLong()) }
-                LabeledSlider("Spreading Factor", l.spreadingFactor.toFloat(), 7f, 12f, steps = 4) {
-                    vm.setLoraSf(it.toInt())
+        val role = DeviceRole.fromCode(c.deviceRole)
+        val gps = GpsSource.fromCode(c.gpsSource)
+        val digi = DigiMode.fromCode(o.digiMode)
+        Section(
+            "Role & GPS",
+            summary = "${role.label} · ${gps.label} · digi ${digi.label.substringBefore(" (")}",
+            edited = edited { Triple(it.deviceRole, it.gpsSource, it.other.digiMode) },
+        ) {
+            DropdownField("Device role", DeviceRole.entries.map { it to it.label }, role) { vm.setDeviceRole(it) }
+            DropdownField("GPS source", GpsSource.entries.map { it to it.label }, gps) { vm.setGpsSource(it) }
+            DropdownField("Digi mode", DigiMode.entries.map { it to it.label }, digi) { vm.setDigiMode(it) }
+        }
+
+        if (gps == GpsSource.FIXED) {
+            val fp = c.fixedPosition
+            Section(
+                "Fixed Position",
+                summary = "${fp.latitude}, ${fp.longitude} · ${fp.elevation} m",
+                edited = edited { it.fixedPosition },
+            ) {
+                FloatField("Latitude (dd.dddddd)", fp.latitude) { vm.setFixedLat(it) }
+                FloatField("Longitude (dd.dddddd)", fp.longitude) { vm.setFixedLon(it) }
+                FloatField("Elevation (m)", fp.elevation) { vm.setFixedElev(it) }
+
+                val context = LocalContext.current
+                val locating by vm.locationFetching.collectAsStateWithLifecycle()
+                val locationPermissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { granted ->
+                    if (granted) vm.useDeviceLocation() else vm.locationPermissionDenied()
                 }
-                DropdownField("Bandwidth", LORA_BW_OPTIONS, l.signalBandwidth) {
-                    vm.setLoraBw(it)
-                }
-                LabeledSlider("Coding Rate (4/x)", l.codingRate4.toFloat(), 5f, 8f, steps = 2) {
-                    vm.setLoraCr(it.toInt())
-                }
-                DropdownField("TX Power (dBm)", TX_POWER_OPTIONS.map { it to "$it dBm" }, l.power) {
-                    vm.setLoraPower(it)
-                }
-                Text(
-                    "Actual RF output depends on your board — only 20 dBm on 1 W boards " +
-                        "(T-Beam 1W, LoRanger V1) is a verified datasheet figure; other " +
-                        "1 W-board values are approximate.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                    Row(Modifier.fillMaxWidth()) {
-                        Text("Setting", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
-                        Text("T114 / V3.2", Modifier.weight(2f), style = MaterialTheme.typography.labelSmall)
-                        Text("1 W boards", Modifier.weight(2f), style = MaterialTheme.typography.labelSmall)
-                    }
-                    TX_POWER_TABLE.forEach { row ->
-                        Row(Modifier.fillMaxWidth()) {
-                            Text("${row.setting} dBm", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            Text(row.chipOnly, Modifier.weight(2f), style = MaterialTheme.typography.bodySmall)
-                            Text(row.oneWatt, Modifier.weight(2f), style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-                SwitchRow("Channel Activity Detection (CAD, listen before TX)", c.other.cadActive) {
-                    vm.setCadActive(it)
-                }
-                Text(
-                    "Waits for a clear channel plus a short random backoff before each TX; " +
-                        "transmits anyway after 10 s of a busy channel.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
 
-            Section("Display") {
-                val d = c.display
-                SwitchRow("Eco mode (auto-off)", d.ecoMode) { vm.setDisplayEco(it) }
-                IntField("Timeout (sec)", d.timeout) { vm.setDisplayTimeout(it) }
-                SwitchRow("Rotate 180°", d.turn180) { vm.setDisplayTurn180(it) }
-                SwitchRow("Invert display", d.invertDisplay) { vm.setDisplayInvert(it) }
-                SwitchRow("LED enabled", d.ledEnabled) { vm.setDisplayLed(it) }
-            }
-
-            Section("Bluetooth") {
-                SwitchRow("Bluetooth active", c.bluetooth.active) { vm.setBtActive(it) }
-                LabeledTextField("Device name", c.bluetooth.deviceName) { vm.setBtName(it) }
-                SwitchRow("Require PIN", c.bluetooth.pinEnabled) { vm.setBtPinEnabled(it) }
-                BlePinField(c.bluetooth.pin, c.bluetooth.pinEnabled) { vm.setBtPin(it) }
-                Text(
-                    "Save + reboot to apply. After changing the PIN or turning it on/off, " +
-                        "forget the tracker in your phone's Bluetooth settings and pair again.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                // Only firmware that has the option reports a "kiss" block.
-                c.kiss?.let { k ->
-                    SwitchRow("Send RSSI/SNR with received packets", k.rssi) { vm.setKissRssi(it) }
-                    Text(
-                        "Adds the signal strength of each heard packet to the KISS output (Bluetooth, " +
-                            "USB and TCP), for the coverage logger. Tracker role only. Some KISS apps " +
-                            "show the extra frames, so leave it off unless you log coverage.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (k.rssi && c.deviceRole != DeviceRole.TRACKER)
-                            MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
-            Section("Battery") {
-                val b = c.battery
-                SwitchRow("Send voltage in beacon", b.sendVoltage) { vm.setBatSendVoltage(it) }
-                SwitchRow("Send on every beacon", b.sendVoltageAlways) {
-                    vm.setBatSendVoltageAlways(it)
-                }
-                FloatField("Sleep threshold (V)", b.sleepVoltage) { vm.setBatSleepVoltage(it) }
-            }
-
-            Section("PTT Trigger") {
-                val p = c.pttTrigger
-                SwitchRow("PTT active", p.active) { vm.setPttActive(it) }
-                IntField("GPIO pin (-1 = disabled)", p.ioPin) { vm.setPttPin(it) }
-                SwitchRow("Reverse polarity", p.reverse) { vm.setPttReverse(it) }
-                IntField("Pre-delay (ms)", p.preDelay) { vm.setPttPreDelay(it) }
-                IntField("Post-delay (ms)", p.postDelay) { vm.setPttPostDelay(it) }
-            }
-
-            Section("PHG (Station Power-Height-Gain)") {
-                if (supportsPhg) {
-                    val p = c.phg
-                    SwitchRow("PHG beacon active", p.enabled) { vm.setPhgEnabled(it) }
-                    LabeledSlider("Power code", p.power.toFloat(), 0f, 9f, steps = 8) {
-                        vm.setPhgPower(it.toInt())
-                    }
-                    LabeledSlider("Height code", p.height.toFloat(), 0f, 9f, steps = 8) {
-                        vm.setPhgHeight(it.toInt())
-                    }
-                    LabeledSlider("Gain code", p.gain.toFloat(), 0f, 9f, steps = 8) {
-                        vm.setPhgGain(it.toInt())
-                    }
-                    LabeledSlider("Directivity code", p.directivity.toFloat(), 0f, 9f, steps = 8) {
-                        vm.setPhgDirectivity(it.toInt())
-                    }
-                    IntField("Beacon interval (min)", p.beaconRate) { vm.setPhgRate(it) }
-                } else {
-                    Text(
-                        "Requires firmware v${FirmwareVersion.MIN_PHG} or newer$fwHint.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-
-            Section("Remote Config (CourseSentry)") {
-                if (supportsRemoteConfig) {
-                    val r = c.remoteCfg
-                    SwitchRow("Enable remote config", r.enabled) { vm.setRemoteCfgEnabled(it) }
-                    PasswordField("Passcode", r.token) { vm.setRemoteCfgToken(it) }
-                    IntField("Write-unlock window (sec)", r.unlockWindowSec) { vm.setRemoteCfgWindow(it) }
-                    Text(
-                        "Lets the tracker be read and, after an APRS message with the correct " +
-                            "passcode, written to remotely over APRS. An empty passcode disables writes.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                } else {
-                    Text(
-                        "Requires firmware v${FirmwareVersion.MIN_REMOTE_CONFIG} or newer$fwHint.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-
-            Section("WiFi AP") {
-                PasswordField("AP password", c.wifiAP.password) { vm.setWifiApPassword(it) }
-            }
-
-            Section("WiFi STA") {
-                val w = c.wifiSTA
-                SwitchRow("Enable WiFi STA", w.enabled) { vm.setWifiStaEnabled(it) }
-
-                if (supportsWifiMultiNetwork) {
-                    Text(
-                        "Up to 5 networks, tried in order top to bottom. Stays connected until the link drops.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-
-                    w.networks.forEachIndexed { i, net ->
-                        HorizontalDivider()
-                        LabeledTextField("SSID ${i + 1}", net.ssid) { vm.setWifiStaSsid(i, it) }
-                        PasswordField("Password ${i + 1}", net.password) { vm.setWifiStaPassword(i, it) }
-                        TextButton(onClick = { vm.removeWifiStaNetwork(i) }) { Text("Delete network ${i + 1}") }
-                    }
-
-                    if (w.networks.size < 5) {
-                        OutlinedButton(onClick = { vm.addWifiStaNetwork("") }) { Text("+ Add network") }
-                    }
-
-                    val scanning by vm.wifiScanning.collectAsState()
-                    val scanResults by vm.wifiScanResults.collectAsState()
-                    OutlinedButton(onClick = { vm.scanWifiNetworks() }, enabled = !scanning) {
-                        Text(if (scanning) "Scanning… (blocks the device a few seconds)" else "Scan for networks")
-                    }
-                    if (scanResults.isNotEmpty()) {
-                        HorizontalDivider()
-                        Text("Nearby networks — tap to add", style = MaterialTheme.typography.labelMedium)
-                        scanResults.sortedByDescending { it.rssi }.forEach { net ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable(enabled = w.networks.size < 5) { vm.addWifiStaNetwork(net.ssid) },
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(if (net.secure) "🔒 ${net.ssid}" else net.ssid)
-                                Text("${net.rssi} dBm", style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                    }
-                } else {
-                    // Older firmware parses "wifista ssid <i> <ssid>" as a flat,
-                    // non-indexed command and silently mis-stores the index digit
-                    // as part of the SSID instead of rejecting it — so this UI stays
-                    // hidden entirely rather than risk sending it. See FirmwareVersion.kt.
-                    Text(
-                        if (fwVersion == null) {
-                            "Saved-network list unavailable until firmware version is confirmed."
+                OutlinedButton(
+                    onClick = {
+                        val granted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (granted) {
+                            vm.useDeviceLocation()
                         } else {
-                            "Multiple saved networks require firmware v${FirmwareVersion.MIN_WIFI_MULTI_NETWORK} or newer$fwHint."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                            locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                        }
+                    },
+                    enabled = !locating,
+                ) {
+                    if (locating) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.MyLocation, contentDescription = null)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (locating) "Fetching location…" else "Use This Device's Location")
                 }
             }
+        }
 
-            Section("APRS-IS") {
-                val a = c.aprsIS
-                LabeledTextField("Server", a.server) { vm.setAprsIsServer(it) }
-                IntField("Port", a.port) { vm.setAprsIsPort(it) }
-                LabeledTextField("Passcode (blank = auto from callsign)", a.passcode) { vm.setAprsIsPasscode(it) }
-                LabeledTextField("Filter", a.filter) { vm.setAprsIsFilter(it) }
-                if (supportsAprsIsDownlink) {
-                    SwitchRow("Downlink to RF", a.downlinkEnabled) { vm.setAprsIsDownlink(it) }
-                    Text(
-                        "Gates directed messages from APRS-IS back to RF, but only to a " +
-                            "station heard directly on RF in the last 30 minutes.",
-                        style = MaterialTheme.typography.bodySmall,
+        Section(
+            "Bluetooth",
+            summary = if (c.bluetooth.active) {
+                "On · ${c.bluetooth.deviceName} · PIN ${c.bluetooth.pinEnabled.onOff.lowercase()}"
+            } else "Off",
+            edited = edited { it.bluetooth to it.kiss },
+        ) {
+            SwitchRow("Bluetooth active", c.bluetooth.active) { vm.setBtActive(it) }
+            LabeledTextField("Device name", c.bluetooth.deviceName) { vm.setBtName(it) }
+            SwitchRow("Require PIN", c.bluetooth.pinEnabled) { vm.setBtPinEnabled(it) }
+            BlePinField(c.bluetooth.pin, c.bluetooth.pinEnabled) { vm.setBtPin(it) }
+            HelpText(
+                "Save + reboot to apply. After changing the PIN or turning it on/off, " +
+                    "forget the tracker in your phone's Bluetooth settings and pair again.",
+            )
+            // Only firmware that has the option reports a "kiss" block.
+            c.kiss?.let { k ->
+                SwitchRow("Send RSSI/SNR with received packets", k.rssi) { vm.setKissRssi(it) }
+                HelpText(
+                    "Adds the signal strength of each heard packet to the KISS output (Bluetooth, " +
+                        "USB and TCP), for the coverage logger. Tracker role only. Some KISS apps " +
+                        "show the extra frames, so leave it off unless you log coverage.",
+                    isError = k.rssi && role != DeviceRole.TRACKER,
+                )
+            }
+        }
+
+        val w = c.wifiSTA
+        Section(
+            "WiFi",
+            summary = if (w.enabled) "On · ${w.networks.size} network${if (w.networks.size == 1) "" else "s"}" else "Off",
+            edited = edited { it.wifiSTA },
+        ) {
+            SwitchRow("Enable WiFi STA", w.enabled) { vm.setWifiStaEnabled(it) }
+
+            if (supportsWifiMultiNetwork) {
+                HelpText("Up to 5 networks, tried in order top to bottom. Stays connected until the link drops.")
+
+                w.networks.forEachIndexed { i, net ->
+                    HorizontalDivider()
+                    LabeledTextField("SSID ${i + 1}", net.ssid) { vm.setWifiStaSsid(i, it) }
+                    PasswordField("Password ${i + 1}", net.password) { vm.setWifiStaPassword(i, it) }
+                    TextButton(onClick = { vm.removeWifiStaNetwork(i) }) { Text("Delete network ${i + 1}") }
+                }
+
+                if (w.networks.size < 5) {
+                    OutlinedButton(onClick = { vm.addWifiStaNetwork("") }) { Text("+ Add network") }
+                }
+
+                val scanning by vm.wifiScanning.collectAsStateWithLifecycle()
+                val scanResults by vm.wifiScanResults.collectAsStateWithLifecycle()
+                OutlinedButton(onClick = { vm.scanWifiNetworks() }, enabled = !scanning) {
+                    if (scanning) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(if (scanning) "Scanning… (blocks the device a few seconds)" else "Scan for networks")
+                }
+                if (scanResults.isNotEmpty()) {
+                    HorizontalDivider()
+                    Text("Nearby networks — tap to add", style = MaterialTheme.typography.labelLarge)
+                    scanResults.sortedByDescending { it.rssi }.forEach { net ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .clickable(
+                                    enabled = w.networks.size < 5,
+                                    onClickLabel = "Add network",
+                                ) { vm.addWifiStaNetwork(net.ssid) }
+                                .semantics(mergeDescendants = true) {},
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (net.secure) {
+                                Icon(Icons.Default.Lock, contentDescription = "Secured", modifier = Modifier.size(18.dp))
+                            } else {
+                                Spacer(Modifier.width(18.dp))
+                            }
+                            Text(net.ssid, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                            Text("${net.rssi} dBm", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            } else {
+                // Older firmware parses "wifista ssid <i> <ssid>" as a flat,
+                // non-indexed command and silently mis-stores the index digit
+                // as part of the SSID instead of rejecting it — so this UI stays
+                // hidden entirely rather than risk sending it. See FirmwareVersion.kt.
+                HelpText(
+                    if (fwVersion == null) {
+                        "Saved-network list unavailable until firmware version is confirmed."
+                    } else {
+                        "Multiple saved networks require firmware v${FirmwareVersion.MIN_WIFI_MULTI_NETWORK} or newer$fwHint."
+                    },
+                )
+            }
+        }
+
+        val a = c.aprsIS
+        Section(
+            "APRS-IS",
+            summary = "${a.server}:${a.port}",
+            edited = edited { it.aprsIS },
+        ) {
+            LabeledTextField("Server", a.server) { vm.setAprsIsServer(it) }
+            IntField("Port", a.port) { vm.setAprsIsPort(it) }
+            LabeledTextField("Passcode (blank = auto from callsign)", a.passcode) { vm.setAprsIsPasscode(it) }
+            LabeledTextField("Filter", a.filter) { vm.setAprsIsFilter(it) }
+            if (supportsAprsIsDownlink) {
+                SwitchRow("Downlink to RF", a.downlinkEnabled) { vm.setAprsIsDownlink(it) }
+                HelpText(
+                    "Gates directed messages from APRS-IS back to RF, but only to a " +
+                        "station heard directly on RF in the last 30 minutes.",
+                )
+            } else {
+                HelpText("Downlink to RF requires firmware v${FirmwareVersion.MIN_APRSIS_DOWNLINK} or newer$fwHint.")
+            }
+        }
+
+        val d = c.display
+        Section(
+            "Display",
+            summary = "Eco ${d.ecoMode.onOff.lowercase()} · timeout ${d.timeout} s · LED ${d.ledEnabled.onOff.lowercase()}",
+            edited = edited { it.display },
+        ) {
+            SwitchRow("Eco mode (auto-off)", d.ecoMode) { vm.setDisplayEco(it) }
+            IntField("Timeout (sec)", d.timeout) { vm.setDisplayTimeout(it) }
+            SwitchRow("Rotate 180°", d.turn180) { vm.setDisplayTurn180(it) }
+            SwitchRow("Invert display", d.invertDisplay) { vm.setDisplayInvert(it) }
+            SwitchRow("LED enabled", d.ledEnabled) { vm.setDisplayLed(it) }
+        }
+
+        val bat = c.battery
+        Section(
+            "Battery",
+            summary = "Sleep below ${bat.sleepVoltage} V · voltage in beacon ${bat.sendVoltage.onOff.lowercase()}",
+            edited = edited { it.battery },
+        ) {
+            SwitchRow("Send voltage in beacon", bat.sendVoltage) { vm.setBatSendVoltage(it) }
+            SwitchRow("Send on every beacon", bat.sendVoltageAlways) { vm.setBatSendVoltageAlways(it) }
+            FloatField("Sleep threshold (V)", bat.sleepVoltage) { vm.setBatSleepVoltage(it) }
+        }
+
+        // ---- Advanced: rarely changed ------------------------------------------
+
+        Text(
+            "Advanced",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .padding(top = 16.dp, start = 4.dp)
+                .semantics { heading() },
+        )
+
+        val p = c.pttTrigger
+        Section(
+            "PTT Trigger",
+            summary = if (p.active) "On · GPIO ${p.ioPin}" else "Off",
+            edited = edited { it.pttTrigger },
+        ) {
+            SwitchRow("PTT active", p.active) { vm.setPttActive(it) }
+            IntField("GPIO pin (-1 = disabled)", p.ioPin) { vm.setPttPin(it) }
+            SwitchRow("Reverse polarity", p.reverse) { vm.setPttReverse(it) }
+            IntField("Pre-delay (ms)", p.preDelay) { vm.setPttPreDelay(it) }
+            IntField("Post-delay (ms)", p.postDelay) { vm.setPttPostDelay(it) }
+        }
+
+        Section(
+            "PHG (Station Power-Height-Gain)",
+            summary = if (!supportsPhg) "Needs newer firmware" else c.phg.enabled.onOff,
+            edited = edited { it.phg },
+        ) {
+            if (supportsPhg) {
+                val phg = c.phg
+                SwitchRow("PHG beacon active", phg.enabled) { vm.setPhgEnabled(it) }
+                LabeledSlider("Power code", phg.power.toFloat(), 0f, 9f, steps = 8) { vm.setPhgPower(it.toInt()) }
+                LabeledSlider("Height code", phg.height.toFloat(), 0f, 9f, steps = 8) { vm.setPhgHeight(it.toInt()) }
+                LabeledSlider("Gain code", phg.gain.toFloat(), 0f, 9f, steps = 8) { vm.setPhgGain(it.toInt()) }
+                LabeledSlider("Directivity code", phg.directivity.toFloat(), 0f, 9f, steps = 8) {
+                    vm.setPhgDirectivity(it.toInt())
+                }
+                IntField("Beacon interval (min)", phg.beaconRate) { vm.setPhgRate(it) }
+            } else {
+                HelpText("Requires firmware v${FirmwareVersion.MIN_PHG} or newer$fwHint.")
+            }
+        }
+
+        Section(
+            "Remote Config (CourseSentry)",
+            summary = if (!supportsRemoteConfig) "Needs newer firmware" else c.remoteCfg.enabled.onOff,
+            edited = edited { it.remoteCfg },
+        ) {
+            if (supportsRemoteConfig) {
+                val r = c.remoteCfg
+                SwitchRow("Enable remote config", r.enabled) { vm.setRemoteCfgEnabled(it) }
+                PasswordField("Passcode", r.token) { vm.setRemoteCfgToken(it) }
+                IntField("Write-unlock window (sec)", r.unlockWindowSec) { vm.setRemoteCfgWindow(it) }
+                HelpText(
+                    "Lets the tracker be read and, after an APRS message with the correct " +
+                        "passcode, written to remotely over APRS. An empty passcode disables writes.",
+                )
+            } else {
+                HelpText("Requires firmware v${FirmwareVersion.MIN_REMOTE_CONFIG} or newer$fwHint.")
+            }
+        }
+
+        Section("WiFi Access Point", summary = "Setup hotspot password", edited = edited { it.wifiAP }) {
+            PasswordField("AP password", c.wifiAP.password) { vm.setWifiApPassword(it) }
+        }
+
+        Section("TCP KISS", summary = "Port ${c.tcpKISS.port}", edited = edited { it.tcpKISS }) {
+            IntField("Port", c.tcpKISS.port) { vm.setTcpKissPort(it) }
+        }
+
+        Spacer(Modifier.height(16.dp))
+    }
+}
+
+/**
+ * Save / Discard for the config editor, shown above the bottom navigation while there
+ * are unsaved changes. Lives outside the scrolling editor so it is never covered by a
+ * snackbar or scrolled away, and shows progress while the tracker works.
+ */
+@Composable
+fun ConfigSaveBar(vm: ConfigViewModel) {
+    val dirty by vm.dirty.collectAsStateWithLifecycle()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    var showDiscardDialog by remember { mutableStateOf(false) }
+    if (!dirty && busy == null) return
+
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer, tonalElevation = 3.dp) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                when (busy) {
+                    BusyAction.SAVING -> "Saving…"
+                    BusyAction.DISCARDING -> "Discarding…"
+                    null -> "Unsaved changes"
+                },
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            OutlinedButton(onClick = { showDiscardDialog = true }, enabled = busy == null) {
+                if (busy == BusyAction.DISCARDING) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = null)
+                }
+                Spacer(Modifier.width(6.dp))
+                Text("Discard")
+            }
+            Button(onClick = { vm.save() }, enabled = busy == null) {
+                if (busy == BusyAction.SAVING) {
+                    CircularProgressIndicator(
+                        Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
                     )
                 } else {
-                    Text(
-                        "Downlink to RF requires firmware v${FirmwareVersion.MIN_APRSIS_DOWNLINK} or newer$fwHint.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    Icon(Icons.Default.Save, contentDescription = null)
                 }
+                Spacer(Modifier.width(6.dp))
+                Text("Save")
             }
-
-            Section("TCP KISS") {
-                IntField("Port", c.tcpKISS.port) { vm.setTcpKissPort(it) }
-            }
-
-            Section("Role & GPS") {
-                DropdownField(
-                    label = "Device role",
-                    options = listOf(0 to "Tracker", 1 to "iGate", 2 to "Digipeater"),
-                    selected = c.deviceRole,
-                ) { vm.setDeviceRole(it) }
-                DropdownField(
-                    label = "GPS source",
-                    options = listOf(
-                        0 to GpsSource.label(0),
-                        1 to GpsSource.label(1),
-                        2 to GpsSource.label(2),
-                    ),
-                    selected = c.gpsSource,
-                ) { vm.setGpsSource(it) }
-                DropdownField(
-                    label = "Digi mode",
-                    options = listOf(
-                        0 to DigiMode.label(0),
-                        1 to DigiMode.label(1),
-                        2 to DigiMode.label(2),
-                    ),
-                    selected = c.other.digiMode,
-                ) { vm.setDigiMode(it) }
-            }
-
-            if (c.gpsSource == 1) {
-                Section("Fixed Position") {
-                    val fp = c.fixedPosition
-                    FloatField("Latitude (dd.dddddd)", fp.latitude) { vm.setFixedLat(it) }
-                    FloatField("Longitude (dd.dddddd)", fp.longitude) { vm.setFixedLon(it) }
-                    FloatField("Elevation (m)", fp.elevation) { vm.setFixedElev(it) }
-
-                    val context = LocalContext.current
-                    val locating by vm.locationFetching.collectAsState()
-                    val locationPermissionLauncher = rememberLauncherForActivityResult(
-                        ActivityResultContracts.RequestPermission(),
-                    ) { granted ->
-                        if (granted) vm.useDeviceLocation() else vm.locationPermissionDenied()
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            val granted = ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.ACCESS_FINE_LOCATION,
-                            ) == PackageManager.PERMISSION_GRANTED
-                            if (granted) {
-                                vm.useDeviceLocation()
-                            } else {
-                                locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                            }
-                        },
-                        enabled = !locating,
-                    ) {
-                        Text(if (locating) "Fetching location…" else "📍 Use This Device's Location")
-                    }
-                }
-            }
-
-            Section("Other") {
-                val o = c.other
-                DropdownField(
-                    label = "Beacon path",
-                    options = BEACON_PATH_OPTIONS,
-                    // Legacy configs stored "" for no-repeat; normalize to the explicit DIRECT option.
-                    selected = o.beaconPath.ifEmpty { "DIRECT" },
-                ) { vm.setBeaconPath(it) }
-                IntField("Non-smart rate (sec)", o.nonSmartBeaconRateSec) { vm.setNonSmartRate(it) }
-                IntField("Comment after N beacons", o.sendCommentAfterXBeacons) {
-                    vm.setSendCommentAfter(it)
-                }
-                SwitchRow("Send altitude", o.sendAltitude) { vm.setSendAltitude(it) }
-                SwitchRow("Send speed/course", o.sendSpeedCourse) { vm.setSendSpeedCourse(it) }
-            }
-
-            Spacer(Modifier.height(80.dp)) // space for FAB
         }
     }
 
@@ -557,63 +656,76 @@ fun ConfigScreen(vm: ConfigViewModel) {
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun Card(color: androidx.compose.ui.graphics.Color, label: String) {
-    androidx.compose.material3.Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = color),
-    ) { Text(label, modifier = Modifier.padding(12.dp)) }
+private fun HelpText(text: String, isError: Boolean = false) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
-/** Shown when the firmware rejects a field edit, or a field command times out — see
- *  ConfigViewModel.dispatchField(). Dismissible since it otherwise sticks around until
- *  the same field is edited again successfully. */
+/**
+ * Collapsible settings group. Collapsed, it shows a one-line [summary] of the current
+ * values; [edited] marks a group with unsaved changes. The whole header is the tap target.
+ */
 @Composable
-private fun FieldErrorBanner(error: FieldError, onDismiss: () -> Unit) {
-    androidx.compose.material3.Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = androidx.compose.material3.CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer,
-        ),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "⚠ \"${error.field}\" was rejected: ${error.message}",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-            )
-            TextButton(onClick = onDismiss) { Text("Dismiss") }
-        }
-    }
-}
-
-@Composable
-private fun Section(title: String, content: @Composable () -> Unit) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    androidx.compose.material3.Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp)) {
+private fun Section(
+    title: String,
+    summary: String? = null,
+    edited: Boolean = false,
+    /** Richer collapsed summary (e.g. with an icon); used instead of [summary] when given. */
+    summaryContent: (@Composable () -> Unit)? = null,
+    initiallyExpanded: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 56.dp)
+                    .clickable(onClickLabel = if (expanded) "Collapse" else "Expand") { expanded = !expanded }
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .semantics(mergeDescendants = true) {
+                        heading()
+                        stateDescription = if (expanded) "Expanded" else "Collapsed"
+                    },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = { expanded = !expanded }) {
-                    Icon(
-                        if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (expanded) "Collapse" else "Expand",
-                    )
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(title, style = MaterialTheme.typography.titleMedium)
+                        if (edited) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Edited",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                    if (!expanded && summaryContent != null) {
+                        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) {
+                            summaryContent()
+                        }
+                    } else if (!expanded && !summary.isNullOrBlank()) {
+                        Text(
+                            summary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
+                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null)
             }
             if (expanded) {
-                Spacer(Modifier.height(4.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { content() }
+                Column(
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) { content() }
             }
         }
     }
@@ -636,14 +748,14 @@ private fun LabeledTextField(label: String, value: String, onValueChange: (Strin
  * the value directly instead of having to delete it first. Returns null to ignore
  * the edit (e.g. a multi-character paste).
  */
-private fun singleCharEdit(current: String, input: String): String? = when {
+internal fun singleCharEdit(current: String, input: String): String? = when {
     input.length <= 1 -> input
     input.length == 2 && current.length == 1 ->
         if (input[0].toString() == current) input.substring(1) else input.substring(0, 1)
     else -> null
 }
 
-private val BLE_PIN_REGEX =Regex("[0-9]{4,6}")   // used with matches(), i.e. full-string match
+private val BLE_PIN_REGEX = Regex("[0-9]{4,6}")   // used with matches(), i.e. full-string match
 
 /**
  * BLE pairing PIN editor. Only digits are accepted, and only a complete 4-6 digit
@@ -742,18 +854,6 @@ private fun FloatField(label: String, value: Float, onValueChange: (Float) -> Un
 }
 
 @Composable
-private fun SwitchRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
-    }
-}
-
-@Composable
 private fun LabeledSlider(
     label: String,
     value: Float,
@@ -765,8 +865,8 @@ private fun LabeledSlider(
     var current by remember(value) { mutableStateOf(value) }
     Column {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
-            Text(current.toInt().toString(), style = MaterialTheme.typography.bodyMedium)
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+            Text(current.toInt().toString(), style = MaterialTheme.typography.titleMedium)
         }
         Slider(
             value = current,
@@ -774,6 +874,7 @@ private fun LabeledSlider(
             onValueChangeFinished = { onValueChangeFinished(current) },
             valueRange = min..max,
             steps = steps,
+            modifier = Modifier.semantics { this.contentDescription = label },
         )
     }
 }
@@ -797,7 +898,7 @@ private fun <T> DropdownField(
             label = { Text(label) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
             modifier = Modifier
-                .menuAnchor()
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
                 .fillMaxWidth(),
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {

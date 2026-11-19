@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Base theme; Compose Material3 overrides most styling at the Compose layer -->
-    <style name="Theme.LoRaFieldOpsConfig" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Window theme only: Compose draws the UI. The window background matches the
+         Compose surface so launch doesn't flash a different color. -->
+    <style name="Theme.LoRaFieldOpsConfig" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:colorPrimary">@color/brand_green</item>
+        <item name="android:colorAccent">@color/brand_green</item>
+    </style>
 </resources>

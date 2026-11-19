@@ -199,68 +199,46 @@ data class RemoteCfgConfig(
 )
 
 // ---------------------------------------------------------------------------
-// Enum helpers — kept as constants for command building; not part of JSON model
+// Enumerated settings. The JSON model keeps the firmware's integer codes; these
+// map them to CLI words and labels. An unknown code (newer firmware) falls back to
+// the first entry for display, but the stored integer is never rewritten.
 // ---------------------------------------------------------------------------
 
-object DeviceRole {
-    const val TRACKER = 0
-    const val IGATE = 1
-    const val DIGIPEATER = 2
+enum class DeviceRole(val code: Int, val cli: String, val label: String) {
+    TRACKER(0, "tracker", "Tracker"),
+    IGATE(1, "igate", "iGate"),
+    DIGIPEATER(2, "digipeater", "Digipeater");
 
-    fun toCliString(v: Int) = when (v) {
-        TRACKER -> "tracker"
-        IGATE -> "igate"
-        DIGIPEATER -> "digipeater"
-        else -> "tracker"
-    }
-    fun label(v: Int) = when (v) {
-        TRACKER -> "Tracker"
-        IGATE -> "iGate"
-        DIGIPEATER -> "Digipeater"
-        else -> "Tracker"
+    companion object {
+        fun fromCode(code: Int): DeviceRole = entries.firstOrNull { it.code == code } ?: TRACKER
     }
 }
 
-object GpsSource {
-    const val INTERNAL = 0
-    const val FIXED = 1
-    const val NONE = 2
+enum class GpsSource(val code: Int, val cli: String, val label: String) {
+    INTERNAL(0, "internal", "Internal GPS"),
+    FIXED(1, "fixed", "Fixed Position"),
+    NONE(2, "none", "None (TNC only)");
 
-    fun toCliString(v: Int) = when (v) {
-        INTERNAL -> "internal"
-        FIXED -> "fixed"
-        NONE -> "none"
-        else -> "internal"
-    }
-    fun label(v: Int) = when (v) {
-        INTERNAL -> "Internal GPS"
-        FIXED -> "Fixed Position"
-        NONE -> "None (TNC only)"
-        else -> "Internal GPS"
+    companion object {
+        fun fromCode(code: Int): GpsSource = entries.firstOrNull { it.code == code } ?: INTERNAL
     }
 }
 
-object DigiMode {
-    const val OFF = 0
-    const val WIDE1 = 1
-    const val WIDE1_WIDE2 = 2
+enum class DigiMode(val code: Int, val cli: String, val label: String) {
+    OFF(0, "off", "Off"),
+    WIDE1(1, "wide1", "WIDE1-1 (fill-in)"),
+    WIDE1_WIDE2(2, "wide1+wide2", "WIDE1-1 + WIDE2 (infrastructure)");
 
-    fun toCliString(v: Int) = when (v) {
-        OFF -> "off"
-        WIDE1 -> "wide1"
-        WIDE1_WIDE2 -> "wide1+wide2"
-        else -> "off"
-    }
-    fun label(v: Int) = when (v) {
-        OFF -> "Off"
-        WIDE1 -> "WIDE1-1 (fill-in)"
-        WIDE1_WIDE2 -> "WIDE1-1 + WIDE2 (infrastructure)"
-        else -> "Off"
+    companion object {
+        fun fromCode(code: Int): DigiMode = entries.firstOrNull { it.code == code } ?: OFF
     }
 }
 
 /** SmartBeacon preset labels — index matches beacon.smartBeaconSetting */
 val SMARTBEACON_LABELS = listOf("Runner", "Bike", "Car", "Jetboat", "Custom")
+
+/** [BeaconConfig.smartBeaconSetting] value of the "Custom" preset (uses [CustomSmartBeaconConfig]). */
+const val SMARTBEACON_CUSTOM = 4
 
 /** Firmware-documented beacon TX path presets (matches the web-config's `beaconpath` options). */
 val BEACON_PATH_OPTIONS = listOf(

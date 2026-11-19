@@ -12,19 +12,22 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,9 +35,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
+import android.content.ClipData
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -54,7 +58,7 @@ fun ImportExportSheet(vm: ConfigViewModel, onDismiss: () -> Unit) {
             Text("Import / Export", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
 
-            TabRow(selectedTabIndex = tab) {
+            PrimaryTabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Export") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Import") })
             }
@@ -74,7 +78,7 @@ fun ImportExportSheet(vm: ConfigViewModel, onDismiss: () -> Unit) {
 
 @Composable
 private fun ExportTab(vm: ConfigViewModel) {
-    val clipboard = LocalClipboardManager.current
+    val clipboard = LocalClipboard.current
     val context = LocalContext.current
     var json by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
@@ -107,7 +111,9 @@ private fun ExportTab(vm: ConfigViewModel) {
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
-                    onClick = { clipboard.setText(AnnotatedString(json)) },
+                    onClick = {
+                        scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("tracker_conf.json", json))) }
+                    },
                     modifier = Modifier.weight(1f),
                 ) { Text("Copy") }
                 Button(
@@ -139,16 +145,12 @@ private fun ExportTab(vm: ConfigViewModel) {
 @Composable
 private fun ImportTab(vm: ConfigViewModel, onSuccess: () -> Unit) {
     var pasteText by remember { mutableStateOf("") }
-    var statusText by remember { mutableStateOf("") }
-    val snack by vm.snackMessage.collectAsState()
+    val state by vm.importState.collectAsStateWithLifecycle()
 
-    LaunchedEffect(snack) {
-        snack?.let { msg ->
-            statusText = msg
-            if (msg.contains("successful")) onSuccess()
-            vm.clearSnack()
-        }
+    LaunchedEffect(state) {
+        if (state is ImportState.Done) onSuccess()
     }
+    val sending = state is ImportState.Sending
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
@@ -164,26 +166,21 @@ private fun ImportTab(vm: ConfigViewModel, onSuccess: () -> Unit) {
                 .heightIn(min = 160.dp),
             minLines = 8,
         )
-        if (statusText.isNotEmpty()) {
-            Text(
-                statusText,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (statusText.contains("failed") || statusText.contains("timed") ||
-                        statusText.contains("Invalid"))
-                    MaterialTheme.colorScheme.error
-                else
-                    MaterialTheme.colorScheme.primary,
-            )
+        (state as? ImportState.Failed)?.let {
+            Text(it.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
         }
         Button(
-            onClick = {
-                if (pasteText.isNotBlank()) {
-                    statusText = "Sending…"
-                    vm.importJson(pasteText)
-                }
-            },
-            enabled = pasteText.isNotBlank(),
+            onClick = { vm.importJson(pasteText) },
+            enabled = pasteText.isNotBlank() && !sending,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Send to device") }
+        ) {
+            if (sending) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Sending…")
+            } else {
+                Text("Send to device")
+            }
+        }
     }
 }

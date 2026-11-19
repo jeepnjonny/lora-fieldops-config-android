@@ -1,10 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher foreground: a radio mast with signal arcs, sized to the 66 dp adaptive-icon
+     safe zone. Also used as the themed (monochrome) icon on Android 13+. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,54m-20,0a20,20 0,1 1,40 0a20,20 0,1 1,-40 0" />
+    <group
+        android:scaleX="2.5"
+        android:scaleY="2.5"
+        android:translateX="24"
+        android:translateY="26">
+        <!-- Mast with a small base -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M11,10h2v10h-2z M8,20h8v2h-8z" />
+        <!-- Antenna tip -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M12,6.5a2,2 0,1 1,0 4a2,2 0,1 1,0 -4z" />
+        <!-- Inner arcs -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M7.05,4.05l1.41,1.41A5,5 0,0 0,7 9a5,5 0,0 0,1.46 3.54L7.05,13.95A7,7 0,0 1,5 9a7,7 0,0 1,2.05 -4.95z M16.95,4.05A7,7 0,0 1,19 9a7,7 0,0 1,-2.05 4.95l-1.41,-1.41A5,5 0,0 0,17 9a5,5 0,0 0,-1.46 -3.54z" />
+        <!-- Outer arcs -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M4.22,1.22l1.42,1.42A9,9 0,0 0,3 9a9,9 0,0 0,2.64 6.36l-1.42,1.42A11,11 0,0 1,1 9a11,11 0,0 1,3.22 -7.78z M19.78,1.22A11,11 0,0 1,23 9a11,11 0,0 1,-3.22 7.78l-1.42,-1.42A9,9 0,0 0,21 9a9,9 0,0 0,-2.64 -6.36z" />
+    </group>
 </vector>

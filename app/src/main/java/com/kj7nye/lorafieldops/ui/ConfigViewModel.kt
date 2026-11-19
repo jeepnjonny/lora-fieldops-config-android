@@ -53,6 +53,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
@@ -88,6 +89,32 @@ data class FieldError(val field: String, val message: String)
 /** One AP found by `wifista scan`. */
 data class WifiScanResult(val ssid: String, val rssi: Int, val secure: Boolean)
 
+/** A link the user chose, kept so it can be retried. */
+private sealed interface LinkTarget {
+    data class Usb(val driver: UsbSerialDriver) : LinkTarget
+    data class Ble(val tracker: BleTrackerInfo) : LinkTarget
+}
+
+/** A Status screen card, for its loading spinner. */
+enum class StatusGroup { BATTERY, GPS, APRS_IS, WIFI, VERSION }
+
+/** A Save or Discard the tracker is working on. */
+enum class BusyAction { SAVING, DISCARDING }
+
+/** Progress of a config import from the Import sheet. */
+sealed class ImportState {
+    object Idle : ImportState()
+    object Sending : ImportState()
+    object Done : ImportState()
+    data class Failed(val message: String) : ImportState()
+}
+
+/** Out-of-cycle beacons the tracker sends on request (`tx comment|status`). */
+enum class TxBeacon(val cli: String, val label: String) {
+    COMMENT("comment", "Comment"),
+    STATUS("status", "Status"),
+}
+
 class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     val serialManager = SerialManager(app)
@@ -98,8 +125,19 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     /** Last tracker connected over BLE, for the logger's automatic reconnect. */
     private var lastBleTracker: BleTrackerInfo? = null
     private var reconnectJob: Job? = null
+    /** Link the user last opened, for [retryConnection]. */
+    private var lastTarget: LinkTarget? = null
+    private val _retryLabel = MutableStateFlow<String?>(null)
+    /** Label for the connection screen's Retry button; null when there is nothing to retry. */
+    val retryLabel: StateFlow<String?> = _retryLabel.asStateFlow()
     /** Config as last loaded from / saved to flash; the "before" side of setting-change notes. */
-    private var savedConfig: TrackerConfig? = null
+    private val _savedConfig = MutableStateFlow<TrackerConfig?>(null)
+    /** Config as last loaded from / saved to flash, so the editor can mark what changed. */
+    val savedConfig: StateFlow<TrackerConfig?> = _savedConfig.asStateFlow()
+
+    private val _busy = MutableStateFlow<BusyAction?>(null)
+    /** A Save or Discard in progress; the editor shows it and ignores repeat taps. */
+    val busy: StateFlow<BusyAction?> = _busy.asStateFlow()
     /** Link carrying the current session: [serialManager] or a [BleTransport]. */
     private var transport: DeviceTransport? = null
 
@@ -124,6 +162,13 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     private val _statusLines = MutableStateFlow<Map<String, String>>(emptyMap())
     val statusLines: StateFlow<Map<String, String>> = _statusLines.asStateFlow()
 
+    private val _statusLoading = MutableStateFlow<Set<StatusGroup>>(emptySet())
+    /** Status cards with a read in progress. */
+    val statusLoading: StateFlow<Set<StatusGroup>> = _statusLoading.asStateFlow()
+
+    private val _importState = MutableStateFlow<ImportState>(ImportState.Idle)
+    val importState: StateFlow<ImportState> = _importState.asStateFlow()
+
     private val _snackMessage = MutableStateFlow<String?>(null)
     val snackMessage: StateFlow<String?> = _snackMessage.asStateFlow()
 
@@ -140,7 +185,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     val locationFetching: StateFlow<Boolean> = _locationFetching.asStateFlow()
 
     /** Currently selected log level; persists across log screen recompositions. */
-    val currentLogLevel = MutableStateFlow("info")
+    private val _currentLogLevel = MutableStateFlow("info")
+    val currentLogLevel: StateFlow<String> = _currentLogLevel.asStateFlow()
 
     // Backing store for _logLines — evicts from the front instead of rebuilding
     // a full `it + newLines` list (up to 1000+ elements) on every chunk.
@@ -157,6 +203,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     // Pending debounced sends, keyed by field (e.g. "beacon callsign") — a fresh edit
     // to the same field cancels and restarts the timer instead of queuing another send.
     private val fieldDebounceJobs = mutableMapOf<String, Job>()
+    /** The command each pending debounced send will issue, by field. */
+    private val pendingFieldCmds = mutableMapOf<String, String>()
 
     // -------------------------------------------------------------------------
     // Connection lifecycle
@@ -165,7 +213,42 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     /** Opens a setup session over USB serial. Caller has already obtained USB permission. */
     fun connectUsb(driver: UsbSerialDriver) {
         cancelLoggerReconnect()
+        rememberTarget(LinkTarget.Usb(driver))
         startSession(serialManager) { serialManager.open(driver) }
+    }
+
+    /** Asks for USB permission if needed (Android shows a dialog), then connects. */
+    fun connectUsbWithPermission(driver: UsbSerialDriver) {
+        rememberTarget(LinkTarget.Usb(driver))
+        serialManager.requestPermission(driver.device) { granted ->
+            if (granted) {
+                connectUsb(driver)
+            } else {
+                _connectionState.value = ConnectionState.Error(
+                    "USB access was denied. Tap Retry and choose Allow when Android asks.",
+                )
+            }
+        }
+    }
+
+    /** Opens the last link again (USB or Bluetooth), e.g. after it failed to open. */
+    fun retryConnection() {
+        when (val t = lastTarget) {
+            is LinkTarget.Usb -> connectUsbWithPermission(t.driver)
+            is LinkTarget.Ble -> connectBle(t.tracker)
+            null -> {}
+        }
+    }
+
+    /** Stops a connection attempt in progress (pairing, setup handshake). */
+    fun cancelConnecting() = disconnect()
+
+    private fun rememberTarget(t: LinkTarget) {
+        lastTarget = t
+        _retryLabel.value = when (t) {
+            is LinkTarget.Usb -> "Retry ${t.driver.device.productName ?: "USB device"}"
+            is LinkTarget.Ble -> "Retry ${t.tracker.name}"
+        }
     }
 
     /**
@@ -175,6 +258,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun connectBle(tracker: BleTrackerInfo) {
         cancelLoggerReconnect()
+        rememberTarget(LinkTarget.Ble(tracker))
         openBle(tracker)
     }
 
@@ -330,6 +414,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         logCollectorJob = null
         fieldDebounceJobs.values.forEach { it.cancel() }
         fieldDebounceJobs.clear()
+        pendingFieldCmds.clear()
         protocol?.close()
         protocol = null
         transport?.close()
@@ -396,7 +481,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     val cfg = json.decodeFromString(TrackerConfig.serializer(), r.text)
                     _config.value = cfg
-                    savedConfig = cfg
+                    _savedConfig.value = cfg
                     _dirty.value = false
                     coverageLogger.setTracker(cfg.beacons.firstOrNull())
                 } catch (e: Exception) {
@@ -412,36 +497,42 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     // Save / Discard / Reboot
     // -------------------------------------------------------------------------
 
-    fun save() = viewModelScope.launch {
-        val result = protocol?.sendCommand("save") ?: return@launch
-        when (result) {
-            is CommandResult.Ok -> {
-                _dirty.value = false
-                snack("Config saved")
-                // Before the notes, so a callsign or object change is noted under the new device.
-                _config.value?.let { coverageLogger.setTracker(it.beacons.firstOrNull()) }
-                recordSettingNotes()
-            }
-            is CommandResult.Err -> snack("Save failed: ${result.message}")
-            CommandResult.Timeout -> snack("Save timed out")
+    fun save() = runBusy(BusyAction.SAVING) { proto ->
+        // Edits still waiting out their typing debounce go first, so Save includes them.
+        flushPendingFields()
+        if (report(proto.sendCommand("save"), "Save", ok = "Config saved")) {
+            _dirty.value = false
+            // Before the notes, so a callsign or object change is noted under the new device.
+            _config.value?.let { coverageLogger.setTracker(it.beacons.firstOrNull()) }
+            recordSettingNotes()
         }
     }
 
-    fun discard() = viewModelScope.launch {
+    fun discard() = runBusy(BusyAction.DISCARDING) { proto ->
+        fieldDebounceJobs.values.forEach { it.cancel() }
+        fieldDebounceJobs.clear()
+        pendingFieldCmds.clear()
         // With unsaved edits the tracker reboots instead of printing a prompt.
-        val result = protocol?.sendCommand("discard", completeOn = "rebooting to reload config") ?: return@launch
-        when (result) {
-            is CommandResult.Ok -> { snack("Discarded — device rebooting"); _dirty.value = false }
-            is CommandResult.Err -> snack("Discard failed: ${result.message}")
-            CommandResult.Timeout -> snack("Discard timed out")
+        val r = proto.sendCommand("discard", completeOn = "rebooting to reload config")
+        if (report(r, "Discard", ok = "Discarded — device rebooting")) _dirty.value = false
+    }
+
+    /** Runs [block] as the one Save/Discard in progress; a second tap meanwhile is ignored. */
+    private fun runBusy(action: BusyAction, block: suspend (ProtocolHandler) -> Unit) {
+        val proto = protocol ?: return
+        if (!_busy.compareAndSet(null, action)) return
+        viewModelScope.launch {
+            try { block(proto) } finally { _busy.value = null }
         }
     }
 
-    fun reboot() = viewModelScope.launch {
-        // The tracker resets right after this line, so there is never a prompt to wait for.
-        protocol?.sendCommand("reboot", completeOn = "Rebooting...")
-        snack("Rebooting…")
-        disconnect()
+    fun reboot() {
+        viewModelScope.launch {
+            // The tracker resets right after this line, so there is never a prompt to wait for.
+            protocol?.sendCommand("reboot", completeOn = "Rebooting...")
+            snack("Rebooting…")
+            disconnect()
+        }
     }
 
     /**
@@ -450,8 +541,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun recordSettingNotes() {
         val after = _config.value ?: return
-        val before = savedConfig
-        savedConfig = after
+        val before = _savedConfig.value
+        _savedConfig.value = after
         if (before == null) return
         val callsign = after.beacons.firstOrNull()?.callsign ?: return
         settingChangeNotes(before, after).forEach { coverageLogger.recordEvent(callsign, it) }
@@ -468,21 +559,33 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun importJson(jsonText: String) = viewModelScope.launch {
+    /** Resets the import sheet's state; call before opening the sheet. */
+    fun clearImportState() {
+        if (_importState.value !is ImportState.Sending) _importState.value = ImportState.Idle
+    }
+
+    fun importJson(jsonText: String) {
+        if (_importState.value is ImportState.Sending) return
         // Fail fast on malformed JSON instead of waiting up to 30s for the device
         // to reject it — importConfig() only completes on the import-success marker.
         try {
             json.decodeFromString(TrackerConfig.serializer(), jsonText)
         } catch (e: Exception) {
-            snack("Invalid config JSON: ${e.message}")
-            return@launch
+            _importState.value = ImportState.Failed("Invalid config JSON: ${e.message}")
+            return
         }
-        snack("Sending config…")
-        when (val r = protocol?.importConfig(jsonText)) {
-            is CommandResult.Ok -> snack("Import successful — device rebooting")
-            is CommandResult.Err -> snack("Import failed: ${r?.message}")
-            CommandResult.Timeout -> snack("Import timed out")
-            null -> snack("Not connected")
+        val proto = protocol ?: run { _importState.value = ImportState.Failed("Not connected"); return }
+        _importState.value = ImportState.Sending
+        viewModelScope.launch {
+            _importState.value = when (val r = proto.importConfig(jsonText)) {
+                is CommandResult.Ok -> {
+                    // The sheet closes on success; the snackbar carries the message from there.
+                    snack("Import successful — device rebooting")
+                    ImportState.Done
+                }
+                is CommandResult.Err -> ImportState.Failed("Import failed: ${r.message}")
+                CommandResult.Timeout -> ImportState.Failed("Import timed out")
+            }
         }
     }
 
@@ -490,22 +593,36 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     // Live status reads
     // -------------------------------------------------------------------------
 
-    fun readBattery() = viewModelScope.launch {
-        val r = protocol?.sendCommand("bat read") ?: return@launch
-        if (r is CommandResult.Ok) {
-            // Firmware outputs: bat.voltage=X.XX bat.percent=YY
-            val lines = _statusLines.value.toMutableMap()
-            r.text.split(" ").forEach { token ->
-                val parts = token.split("=")
-                if (parts.size == 2) lines[parts[0]] = parts[1]
-            }
-            _statusLines.value = lines
+    /** Reads every status card (the Status screen does this on entry). */
+    fun refreshAllStatus() {
+        readBattery(); readGps(); readAprsIsStatus(); readWifiStaStatus(); readFirmwareVersion()
+    }
+
+    /**
+     * Runs one status read, marking [group] as loading meanwhile so its card can show
+     * a spinner. A read of a group already in progress is skipped.
+     */
+    private fun readStatus(group: StatusGroup, block: suspend (ProtocolHandler) -> Unit) {
+        val proto = protocol ?: return
+        while (true) {
+            val current = _statusLoading.value
+            if (group in current) return
+            if (_statusLoading.compareAndSet(current, current + group)) break
+        }
+        viewModelScope.launch {
+            try { block(proto) } finally { _statusLoading.update { it - group } }
         }
     }
 
+    /** Firmware: `bat.voltage=X.XX bat.percent=YY`. */
+    fun readBattery() = readStatus(StatusGroup.BATTERY) { proto ->
+        val r = proto.sendCommand("bat read")
+        if (r is CommandResult.Ok) replaceStatusGroup("bat.", parseStatusTokens(r.text))
+    }
+
     /** Firmware: `gps.lat=… gps.lon=… gps.alt=… gps.sats=… gps.valid=0|1`. */
-    fun readGps() = viewModelScope.launch {
-        val r = protocol?.sendCommand("gps read") ?: return@launch
+    fun readGps() = readStatus(StatusGroup.GPS) { proto ->
+        val r = proto.sendCommand("gps read")
         if (r is CommandResult.Ok) replaceStatusGroup("gps.", parseStatusTokens(r.text))
     }
 
@@ -513,16 +630,16 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      * Firmware: `aprsIS.connected=true host=… port=… [server=…]` or `aprsIS.connected=false`.
      * Older firmware sends only the connected flag; the extra keys are then simply absent.
      */
-    fun readAprsIsStatus() = viewModelScope.launch {
-        val r = protocol?.sendCommand("aprsiss status") ?: return@launch
+    fun readAprsIsStatus() = readStatus(StatusGroup.APRS_IS) { proto ->
+        val r = proto.sendCommand("aprsiss status")
         if (r is CommandResult.Ok) {
             replaceStatusGroup("aprsIS.", prefixKeys("aprsIS.", parseStatusTokens(r.text)))
         }
     }
 
     /** Firmware: `wifiSTA.connected=true ip=… ssid=<rest of line>` or `wifiSTA.connected=false`. */
-    fun readWifiStaStatus() = viewModelScope.launch {
-        val r = protocol?.sendCommand("wifista status") ?: return@launch
+    fun readWifiStaStatus() = readStatus(StatusGroup.WIFI) { proto ->
+        val r = proto.sendCommand("wifista status")
         if (r is CommandResult.Ok) {
             replaceStatusGroup("wifiSTA.", prefixKeys("wifiSTA.", parseStatusTokens(r.text, restOfLineKey = "ssid")))
         }
@@ -534,68 +651,45 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      * linger next to a newer "connected=false".
      */
     private fun replaceStatusGroup(prefix: String, fresh: Map<String, String>) {
-        _statusLines.value = _statusLines.value.filterKeys { !it.startsWith(prefix) } + fresh
+        _statusLines.update { lines -> lines.filterKeys { !it.startsWith(prefix) } + fresh }
     }
 
     /**
      * Runs the firmware's blocking 2-4s WiFi scan and parses the
      * `wifiSTA.scan: rssi=X secure=0|1 ssid=Y` lines it prints.
      */
-    fun scanWifiNetworks() = viewModelScope.launch {
-        _wifiScanning.value = true
-        val r = protocol?.sendCommand("wifista scan", timeoutMs = WIFI_SCAN_TIMEOUT_MS)
-        when (r) {
-            is CommandResult.Ok -> _wifiScanResults.value = r.text.lines()
-                .filter { it.startsWith("wifiSTA.scan:") }
-                .mapNotNull { line ->
-                    val rssi = Regex("rssi=(-?\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
-                    val secure = Regex("secure=(\\d)").find(line)?.groupValues?.get(1) == "1"
-                    // ssid= is last on the line and unbounded so SSIDs containing spaces aren't truncated.
-                    val ssid = Regex("ssid=(.*)$").find(line)?.groupValues?.get(1)
-                    if (rssi != null && ssid != null) WifiScanResult(ssid, rssi, secure) else null
-                }
-            is CommandResult.Err -> snack("WiFi scan failed: ${r.message}")
-            CommandResult.Timeout -> snack("WiFi scan timed out")
-            null -> snack("Not connected")
+    fun scanWifiNetworks() {
+        viewModelScope.launch {
+            _wifiScanning.value = true
+            try {
+                val r = protocol?.sendCommand("wifista scan", timeoutMs = WIFI_SCAN_TIMEOUT_MS)
+                if (report(r, "WiFi scan") && r is CommandResult.Ok) _wifiScanResults.value = parseWifiScan(r.text)
+            } finally {
+                _wifiScanning.value = false
+            }
         }
-        _wifiScanning.value = false
     }
 
-    fun readFirmwareVersion() = viewModelScope.launch {
-        val r = protocol?.sendCommand("version") ?: return@launch
+    fun readFirmwareVersion() = readStatus(StatusGroup.VERSION) { proto ->
+        val r = proto.sendCommand("version")
         if (r is CommandResult.Ok) {
             val versionText = r.text.removePrefix("version.date=").trim()
-            val lines = _statusLines.value.toMutableMap()
-            lines["version"] = versionText
-            _statusLines.value = lines
+            _statusLines.update { it + ("version" to versionText) }
             _firmwareVersion.value = FirmwareVersion.parse(versionText)
         }
     }
 
-    fun setLogLevel(level: String) = viewModelScope.launch {
-        protocol?.sendCommand("log $level")
-        currentLogLevel.value = level
-    }
-
-    /** Fires an out-of-cycle comment beacon; does not affect the normal beacon timer. */
-    fun txCommentNow() = viewModelScope.launch {
-        when (val r = protocol?.sendCommand("tx comment")) {
-            is CommandResult.Ok ->
-                if (r.text.startsWith("ERR")) snack("TX failed: ${r.text}") else snack("Comment beacon sent")
-            is CommandResult.Err -> snack("TX failed: ${r.message}")
-            CommandResult.Timeout -> snack("TX timed out")
-            null -> snack("Not connected")
+    fun setLogLevel(level: String) {
+        viewModelScope.launch {
+            protocol?.sendCommand("log $level")
+            _currentLogLevel.value = level
         }
     }
 
-    /** Fires an out-of-cycle status beacon; does not affect the normal beacon timer. */
-    fun txStatusNow() = viewModelScope.launch {
-        when (val r = protocol?.sendCommand("tx status")) {
-            is CommandResult.Ok ->
-                if (r.text.startsWith("ERR")) snack("TX failed: ${r.text}") else snack("Status beacon sent")
-            is CommandResult.Err -> snack("TX failed: ${r.message}")
-            CommandResult.Timeout -> snack("TX timed out")
-            null -> snack("Not connected")
+    /** Fires an out-of-cycle beacon; does not affect the normal beacon timer. */
+    fun txNow(beacon: TxBeacon) {
+        viewModelScope.launch {
+            report(protocol?.sendCommand("tx ${beacon.cli}"), "TX", ok = "${beacon.label} beacon sent")
         }
     }
 
@@ -606,18 +700,14 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      * On success the device drops off USB serial once it enters DFU mode, so we
      * disconnect right after — reflashing continues via the nRF Connect app.
      */
-    fun triggerOtaDfu() = viewModelScope.launch {
-        when (val r = protocol?.sendCommand("otadfu")) {
-            is CommandResult.Ok ->
-                if (r.text.contains("unknown command")) {
-                    snack("OTA DFU is only available on nRF52 boards")
-                } else {
-                    snack("Entering OTA DFU mode — use nRF Connect to upload firmware")
-                    disconnect()
-                }
-            is CommandResult.Err -> snack("OTA DFU failed: ${r.message}")
-            CommandResult.Timeout -> snack("OTA DFU timed out")
-            null -> snack("Not connected")
+    fun triggerOtaDfu() {
+        viewModelScope.launch {
+            val r = protocol?.sendCommand("otadfu")
+            if (r is CommandResult.Ok && r.text.contains("unknown command")) {
+                snack("OTA DFU is only available on nRF52 boards")
+            } else if (report(r, "OTA DFU", ok = "Entering OTA DFU mode — use nRF Connect to upload firmware")) {
+                disconnect()
+            }
         }
     }
 
@@ -866,11 +956,11 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- Role & GPS --
 
-    fun setDeviceRole(v: Int) = sendField("role set ${DeviceRole.toCliString(v)}") {
-        update { copy(deviceRole = v) }
+    fun setDeviceRole(v: DeviceRole) = sendField("role set ${v.cli}") {
+        update { copy(deviceRole = v.code) }
     }
-    fun setGpsSource(v: Int) = sendField("role gps ${GpsSource.toCliString(v)}") {
-        update { copy(gpsSource = v) }
+    fun setGpsSource(v: GpsSource) = sendField("role gps ${v.cli}") {
+        update { copy(gpsSource = v.code) }
     }
 
     // -- Fixed position --
@@ -960,8 +1050,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun setSendSpeedCourse(v: Boolean) = sendField("sendspeed ${v.onOff}") {
         updateOther { copy(sendSpeedCourse = v) }
     }
-    fun setDigiMode(v: Int) = sendField("digi ${DigiMode.toCliString(v)}") {
-        updateOther { copy(digiMode = v) }
+    fun setDigiMode(v: DigiMode) = sendField("digi ${v.cli}") {
+        updateOther { copy(digiMode = v.code) }
     }
 
     // -------------------------------------------------------------------------
@@ -972,6 +1062,20 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     fun clearFieldError() { _lastError.value = null }
 
     private fun snack(msg: String) { _snackMessage.value = msg }
+
+    /**
+     * Shows the outcome of a one-shot command and returns true if it succeeded. A
+     * firmware "ERR" reply arrives as [CommandResult.Ok] and counts as a failure.
+     * [ok] is shown on success when given.
+     */
+    private fun report(r: CommandResult?, what: String, ok: String? = null): Boolean = when (r) {
+        null -> { snack("Not connected"); false }
+        is CommandResult.Err -> { snack("$what failed: ${r.message}"); false }
+        CommandResult.Timeout -> { snack("$what timed out"); false }
+        is CommandResult.Ok ->
+            if (r.text.startsWith("ERR")) { snack("$what failed: ${r.text}"); false }
+            else { ok?.let(::snack); true }
+    }
 
     /**
      * For fields the firmware insists on a value for: it answers an empty one with
@@ -993,6 +1097,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         }
         _config.value?.localUpdate() ?: return
         fieldDebounceJobs.remove(cmdPrefix)?.cancel()
+        pendingFieldCmds.remove(cmdPrefix)
     }
 
     /**
@@ -1026,16 +1131,27 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         _dirty.value = true
 
         fieldDebounceJobs.remove(fieldKey)?.cancel()
+        pendingFieldCmds.remove(fieldKey)
 
         if (debounceMs <= 0L) {
             viewModelScope.launch { dispatchField(cmd, fieldKey) }
         } else {
+            pendingFieldCmds[fieldKey] = cmd
             fieldDebounceJobs[fieldKey] = viewModelScope.launch {
                 delay(debounceMs)
                 fieldDebounceJobs.remove(fieldKey)
+                pendingFieldCmds.remove(fieldKey)
                 dispatchField(cmd, fieldKey)
             }
         }
+    }
+
+    /** Sends every debounced edit now instead of after its delay. */
+    private suspend fun flushPendingFields() {
+        val pending = pendingFieldCmds.toMap()
+        pending.keys.forEach { fieldDebounceJobs.remove(it)?.cancel() }
+        pendingFieldCmds.clear()
+        pending.forEach { (key, cmd) -> dispatchField(cmd, key) }
     }
 
     /**
@@ -1139,6 +1255,19 @@ internal fun parseStatusTokens(text: String, restOfLineKey: String? = null): Map
     }
     return result
 }
+
+/**
+ * Parses the `wifiSTA.scan: rssi=X secure=0|1 ssid=Y` lines of `wifista scan`. The
+ * SSID is last on the line and runs to its end, so SSIDs with spaces stay whole.
+ */
+internal fun parseWifiScan(text: String): List<WifiScanResult> = text.lines()
+    .filter { it.startsWith("wifiSTA.scan:") }
+    .mapNotNull { line ->
+        val rssi = Regex("rssi=(-?\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()
+        val secure = Regex("secure=(\\d)").find(line)?.groupValues?.get(1) == "1"
+        val ssid = Regex("ssid=(.*)$").find(line)?.groupValues?.get(1)
+        if (rssi != null && ssid != null) WifiScanResult(ssid, rssi, secure) else null
+    }
 
 /** Puts [prefix] on keys that don't already carry it (`ip` → `wifiSTA.ip`). */
 private fun prefixKeys(prefix: String, map: Map<String, String>): Map<String, String> =

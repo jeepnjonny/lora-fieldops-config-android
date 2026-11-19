@@ -7,36 +7,44 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.ImportExport
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.IntentCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.kj7nye.lorafieldops.serial.TransportKind
+import com.kj7nye.lorafieldops.ui.ConfigSaveBar
 import com.kj7nye.lorafieldops.ui.ConfigScreen
 import com.kj7nye.lorafieldops.ui.ConfigViewModel
 import com.kj7nye.lorafieldops.ui.ConnectionScreen
@@ -45,7 +53,6 @@ import com.kj7nye.lorafieldops.ui.CoverageLoggerScreen
 import com.kj7nye.lorafieldops.ui.ImportExportSheet
 import com.kj7nye.lorafieldops.ui.LogScreen
 import com.kj7nye.lorafieldops.ui.StatusScreen
-import com.kj7nye.lorafieldops.serial.TransportKind
 import com.kj7nye.lorafieldops.ui.theme.AppTheme
 
 private const val ROUTE_CONNECT = "connect"
@@ -86,9 +93,7 @@ class MainActivity : ComponentActivity() {
         if (state is ConnectionState.Connected || state is ConnectionState.Connecting) return
         val device = IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java) ?: return
         val driver = vm.serialManager.findDevices().firstOrNull { it.device == device } ?: return
-        vm.serialManager.requestPermission(device) { granted ->
-            if (granted) vm.connectUsb(driver)
-        }
+        vm.connectUsbWithPermission(driver)
     }
 }
 
@@ -96,10 +101,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MainNavigation(vm: ConfigViewModel) {
     val navController = rememberNavController()
-    val connState by vm.connectionState.collectAsState()
-    val snackMsg by vm.snackMessage.collectAsState()
+    val connState by vm.connectionState.collectAsStateWithLifecycle()
+    val snackMsg by vm.snackMessage.collectAsStateWithLifecycle()
+    val dirty by vm.dirty.collectAsStateWithLifecycle()
     val snackHost = remember { SnackbarHostState() }
     var showImportExport by remember { mutableStateOf(false) }
+    var confirmDisconnect by remember { mutableStateOf(false) }
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
 
@@ -128,55 +135,72 @@ private fun MainNavigation(vm: ConfigViewModel) {
         }
     }
 
-    val isConnected = connState is ConnectionState.Connected
+    val connected = connState as? ConnectionState.Connected
+    val isConnected = connected != null
     // Log mode is USB-only on the firmware side (the BLE link carries the setup CLI only).
-    val isBleSession = (connState as? ConnectionState.Connected)?.kind == TransportKind.BLE
+    val isBleSession = connected?.kind == TransportKind.BLE
 
     Scaffold(
+        topBar = {
+            if (connected != null) {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(connected.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                if (isBleSession) "Bluetooth" else "USB",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { vm.clearImportState(); showImportExport = true }) {
+                            Icon(Icons.Default.ImportExport, contentDescription = "Import or export config")
+                        }
+                        IconButton(onClick = { if (dirty) confirmDisconnect = true else vm.disconnect() }) {
+                            Icon(Icons.Default.LinkOff, contentDescription = "Disconnect")
+                        }
+                    },
+                )
+            }
+        },
         snackbarHost = { SnackbarHost(snackHost) },
         bottomBar = {
             if (isConnected) {
-                NavigationBar {
-                    NavigationBarItem(
-                        selected = currentRoute == ROUTE_CONFIG,
-                        onClick = { navController.navigate(ROUTE_CONFIG) { launchSingleTop = true } },
-                        icon = { Icon(Icons.Default.Settings, null) },
-                        label = { Text("Config") },
-                    )
-                    NavigationBarItem(
-                        selected = currentRoute == ROUTE_STATUS,
-                        onClick = { navController.navigate(ROUTE_STATUS) { launchSingleTop = true } },
-                        icon = { Icon(Icons.Default.Info, null) },
-                        label = { Text("Status") },
-                    )
-                    if (!isBleSession) {
+                Column {
+                    // Above the navigation bar, so it is never covered by a snackbar or the keyboard's content.
+                    if (currentRoute == ROUTE_CONFIG) ConfigSaveBar(vm)
+                    NavigationBar {
                         NavigationBarItem(
-                            selected = currentRoute == ROUTE_LOG,
-                            onClick = { navController.navigate(ROUTE_LOG) { launchSingleTop = true } },
-                            icon = { Icon(Icons.Default.List, null) },
-                            label = { Text("Log") },
+                            selected = currentRoute == ROUTE_CONFIG,
+                            onClick = { navController.navigate(ROUTE_CONFIG) { launchSingleTop = true } },
+                            icon = { Icon(Icons.Default.Settings, null) },
+                            label = { Text("Config") },
                         )
-                    } else {
-                        // Coverage logger rides on the Bluetooth link, so it takes the Log slot there.
                         NavigationBarItem(
-                            selected = currentRoute == ROUTE_LOGGER,
-                            onClick = { navController.navigate(ROUTE_LOGGER) { launchSingleTop = true } },
-                            icon = { Icon(Icons.Default.Sensors, null) },
-                            label = { Text("Logger") },
+                            selected = currentRoute == ROUTE_STATUS,
+                            onClick = { navController.navigate(ROUTE_STATUS) { launchSingleTop = true } },
+                            icon = { Icon(Icons.Default.Info, null) },
+                            label = { Text("Status") },
                         )
+                        if (!isBleSession) {
+                            NavigationBarItem(
+                                selected = currentRoute == ROUTE_LOG,
+                                onClick = { navController.navigate(ROUTE_LOG) { launchSingleTop = true } },
+                                icon = { Icon(Icons.AutoMirrored.Filled.List, null) },
+                                label = { Text("Log") },
+                            )
+                        } else {
+                            // Coverage logger rides on the Bluetooth link, so it takes the Log slot there.
+                            NavigationBarItem(
+                                selected = currentRoute == ROUTE_LOGGER,
+                                onClick = { navController.navigate(ROUTE_LOGGER) { launchSingleTop = true } },
+                                icon = { Icon(Icons.Default.Sensors, null) },
+                                label = { Text("Logger") },
+                            )
+                        }
                     }
-                    NavigationBarItem(
-                        selected = false,
-                        onClick = { showImportExport = true },
-                        icon = { Icon(Icons.Default.ImportExport, null) },
-                        label = { Text("Import/Export") },
-                    )
-                    NavigationBarItem(
-                        selected = false,
-                        onClick = { vm.disconnect() },
-                        icon = { Icon(if (isBleSession) Icons.Default.Bluetooth else Icons.Default.Usb, null) },
-                        label = { Text("Disconnect") },
-                    )
                 }
             }
         },
@@ -208,5 +232,24 @@ private fun MainNavigation(vm: ConfigViewModel) {
 
     if (showImportExport) {
         ImportExportSheet(vm) { showImportExport = false }
+    }
+
+    if (confirmDisconnect) {
+        AlertDialog(
+            onDismissRequest = { confirmDisconnect = false },
+            title = { Text("Disconnect with unsaved changes?") },
+            text = {
+                Text(
+                    "Your edits stay in the tracker's memory but aren't saved. They're lost when it " +
+                        "reboots; reconnect to Save or Discard them.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmDisconnect = false; vm.disconnect() }) { Text("Disconnect") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDisconnect = false }) { Text("Cancel") }
+            },
+        )
     }
 }
