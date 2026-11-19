@@ -21,7 +21,7 @@ const val SIGNAL_REPORT_WINDOW_MS = 1_000L
  * never sends reports just gets entries without rssi/snr, [SIGNAL_REPORT_WINDOW_MS] later.
  *
  * Pure logic with an injected clock (milliseconds), so it is unit tested directly.
- * Create a new instance (or call [reset]) for each BLE connection.
+ * Create a new instance for each BLE connection.
  */
 class PacketRecorder(
     /** Device as registered on the site: "K7ABC-9", or "SENDER:OBJECT" for object trackers. */
@@ -33,11 +33,6 @@ class PacketRecorder(
     private val deframer = KissDeframer()
     private var pending: CoverageEntry? = null
     private var pendingAtMs = 0L
-
-    fun reset() {
-        deframer.reset()
-        pending = null
-    }
 
     /** Feeds one BLE notification received at [nowMs]; returns entries now ready to queue. */
     fun onBytes(bytes: ByteArray, nowMs: Long): List<CoverageEntry> {

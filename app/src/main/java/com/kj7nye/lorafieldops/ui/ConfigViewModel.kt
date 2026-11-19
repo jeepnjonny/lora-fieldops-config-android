@@ -40,6 +40,7 @@ import com.kj7nye.lorafieldops.serial.BleTransport
 import com.kj7nye.lorafieldops.serial.CommandResult
 import com.kj7nye.lorafieldops.serial.ConnectionEvent
 import com.kj7nye.lorafieldops.serial.DeviceTransport
+import com.kj7nye.lorafieldops.serial.LineAssembler
 import com.kj7nye.lorafieldops.serial.ProtocolHandler
 import com.kj7nye.lorafieldops.serial.SerialManager
 import com.kj7nye.lorafieldops.serial.TransportKind
@@ -147,6 +148,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     private val logTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
     private var connectionEventJob: Job? = null
+    /** Setup-mode handshake and first config load of the current session. */
+    private var setupJob: Job? = null
     private var logCollectorJob: Job? = null
     private var locationListener: LocationListener? = null
     private var locationTimeoutJob: Job? = null
@@ -204,6 +207,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         // Track as a Job so disconnect() can cancel it before the port close triggers
         // a Lost event that would overwrite the Disconnected state we already set.
         connectionEventJob?.cancel()
+        setupJob?.cancel()
+        setupJob = null
         connectionEventJob = viewModelScope.launch {
             link.connectionEvents.collect { event ->
                 when (event) {
@@ -213,10 +218,14 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                     is ConnectionEvent.Opened -> {
                         _connectionState.value = ConnectionState.Connected(event.label, link.kind)
                         if (link is BleTransport) coverageLogger.attach(link)
-                        enterSetupAndLoad(proto, link.kind)
+                        // Own job: the handshake can take 45 s+ and a Lost/Error arriving
+                        // meanwhile must be handled right away, not after it.
+                        setupJob?.cancel()
+                        setupJob = viewModelScope.launch { enterSetupAndLoad(proto, link.kind) }
                     }
                     is ConnectionEvent.Error -> {
                         _connectionState.value = ConnectionState.Error(event.message)
+                        setupJob?.cancel()
                         proto.close()
                         protocol = null
                         if (link is BleTransport) coverageLogger.detach(reconnecting = reconnectJob?.isActive == true)
@@ -224,6 +233,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     is ConnectionEvent.Lost -> {
                         _connectionState.value = ConnectionState.Error("Disconnected: ${event.reason}")
+                        setupJob?.cancel()
                         proto.close()
                         protocol = null
                         val autoReconnect = link is BleTransport && coverageLogger.isEnabled
@@ -244,29 +254,19 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         // rxReader receive every byte since SharedFlow supports multiple subscribers.
         logCollectorJob?.cancel()
         logCollectorJob = viewModelScope.launch {
-            val lineBuf = StringBuilder()
+            val lines = LineAssembler()
             link.rxFlow.collect { bytes ->
-                lineBuf.append(bytes.toString(Charsets.UTF_8))
-                val raw = lineBuf.toString()
-                val lastNl = raw.lastIndexOf('\n')
-                if (lastNl >= 0) {
-                    val complete = raw.substring(0, lastNl + 1)
-                    lineBuf.clear()
-                    lineBuf.append(raw.substring(lastNl + 1))
-                    val newLines = complete.lines()
-                        .map { it.trimEnd('\r') }
-                        .filter { it.isNotEmpty() }
-                    if (newLines.isNotEmpty()) {
-                        newLines.forEach { line ->
-                            if (logBuffer.size >= 1000) logBuffer.removeFirst()
-                            // Device log output carries no timestamp of its own, so stamp
-                            // each line with local receipt time. This is a live tail with
-                            // no backlog replay, so receipt time is accurate to within
-                            // serial transmission latency.
-                            logBuffer.addLast("[${logTimeFormatter.format(LocalTime.now())}] $line")
-                        }
-                        _logLines.value = logBuffer.toList()
+                val newLines = lines.feed(bytes)
+                if (newLines.isNotEmpty()) {
+                    newLines.forEach { line ->
+                        if (logBuffer.size >= 1000) logBuffer.removeFirst()
+                        // Device log output carries no timestamp of its own, so stamp
+                        // each line with local receipt time. This is a live tail with
+                        // no backlog replay, so receipt time is accurate to within
+                        // serial transmission latency.
+                        logBuffer.addLast("[${logTimeFormatter.format(LocalTime.now())}] $line")
                     }
+                    _logLines.value = logBuffer.toList()
                 }
             }
         }
@@ -324,6 +324,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         // closes cannot overwrite the Disconnected state we're about to set.
         connectionEventJob?.cancel()
         connectionEventJob = null
+        setupJob?.cancel()
+        setupJob = null
         logCollectorJob?.cancel()
         logCollectorJob = null
         fieldDebounceJobs.values.forEach { it.cancel() }
@@ -972,19 +974,6 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     private fun snack(msg: String) { _snackMessage.value = msg }
 
     /**
-     * Applies [localUpdate] immediately to _config for a responsive UI, then sends [cmd].
-     *
-     * [debounceMs] > 0 coalesces rapid repeated calls for the same field (e.g. one per
-     * keystroke while typing a callsign) into a single send after the user pauses —
-     * only the final value goes over the wire instead of one command per character.
-     * Toggles/dropdowns/sliders fire once per user action already, so they pass the
-     * default 0 (send immediately).
-     *
-     * If the firmware rejects the value or the command times out, [lastError] is set
-     * and the local config is re-synced from the device so the UI doesn't keep showing
-     * a value the device never actually accepted.
-     */
-    /**
      * For fields the firmware insists on a value for: it answers an empty one with
      * "ERR" (e.g. "symbol must be 1 char"). An empty box is just the moment between
      * deleting the old value and typing the new one, so it stays a local edit: nothing
@@ -1007,17 +996,32 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Applies [localUpdate] immediately to _config for a responsive UI, then sends [rawCmd].
+     *
+     * [debounceMs] > 0 coalesces rapid repeated calls for the same field (e.g. one per
+     * keystroke while typing a callsign) into a single send after the user pauses —
+     * only the final value goes over the wire instead of one command per character.
+     * Toggles/dropdowns/sliders fire once per user action already, so they pass the
+     * default 0 (send immediately).
+     *
+     * If the firmware rejects the value or the command times out, [lastError] is set
+     * and the local config is re-synced from the device so the UI doesn't keep showing
+     * a value the device never actually accepted.
+     *
      * [fieldKey] identifies the field for debouncing and error display. The default
      * (command minus its last word) is only right for single-word values; callers whose
      * value can contain spaces (SSIDs, filters) pass the command prefix explicitly, or
      * every keystroke would get its own key and its own send.
      */
     private fun sendField(
-        cmd: String,
+        rawCmd: String,
         debounceMs: Long = 0L,
-        fieldKey: String = cmd.substringBeforeLast(" "),
+        fieldKey: String = rawCmd.substringBeforeLast(" "),
         localUpdate: TrackerConfig.() -> Unit,
     ) {
+        // A pasted line break would end the command early and run the rest as a second
+        // command on the tracker; no setting value needs control characters.
+        val cmd = rawCmd.filterNot { it.isISOControl() }
         _config.value?.localUpdate() ?: return
         _dirty.value = true
 

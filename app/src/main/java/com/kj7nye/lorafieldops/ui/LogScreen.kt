@@ -47,8 +47,9 @@ fun LogScreen(vm: ConfigViewModel) {
     // Enter log mode on the device when this screen is shown
     LaunchedEffect(Unit) { vm.setLogLevel(currentLevel) }
 
-    // Auto-scroll to the bottom whenever a new line arrives
-    LaunchedEffect(logLines.size) {
+    // Auto-scroll to the bottom whenever a new line arrives. Keyed on the list itself:
+    // once the buffer is full (1000 lines) its size stops changing.
+    LaunchedEffect(logLines) {
         if (logLines.isNotEmpty()) {
             listState.animateScrollToItem(logLines.size - 1)
         }

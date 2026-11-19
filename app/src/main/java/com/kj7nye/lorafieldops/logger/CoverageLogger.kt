@@ -18,6 +18,7 @@ import com.kj7nye.lorafieldops.model.CoverageEntry
 import com.kj7nye.lorafieldops.model.CoverageEntryType
 import com.kj7nye.lorafieldops.serial.BleTransport
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -41,6 +43,7 @@ private const val TAG = "CoverageLogger"
 private const val UPLOAD_INTERVAL_MS = 60_000L
 private const val FLUSH_TICK_MS = 250L
 private const val UPLOAD_WORK = "coverage-upload"
+private const val INSERT_ATTEMPTS = 4
 
 /** What the logger is doing right now; drives the logger screen and the notification. */
 data class LoggerRuntime(
@@ -64,7 +67,12 @@ data class LoggerRuntime(
  */
 class CoverageLogger private constructor(context: Context) {
     private val app = context.applicationContext
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default +
+        CoroutineExceptionHandler { _, e ->
+            // A logger bug must never take the app (and the user's config session) down.
+            Log.e(TAG, "logger error", e)
+            runCatching { settingsStore.updateStatus { it.copy(lastError = "Logger error: ${e.message ?: e.javaClass.simpleName}") } }
+        })
 
     val settingsStore = LoggerSettingsStore(app)
     private val dao = LogQueueDb.get(app).dao()
@@ -103,13 +111,26 @@ class CoverageLogger private constructor(context: Context) {
         s.device.trim().ifEmpty { trackerDevice(tracker) }
 
     init {
-        scope.launch { for (rows in inserts) runCatching { dao.insert(rows) }.onFailure { Log.w(TAG, "queue insert failed", it) } }
+        scope.launch { for (rows in inserts) insertWithRetry(rows) }
         // Re-evaluate the session whenever a setting that affects recording changes.
         scope.launch {
             settingsStore.settings
                 .combine(_tracker) { s, t -> Triple(s.enabled, effectiveDevice(s, t), s.uploadTx to s.uploadRx) }
                 .distinctUntilChanged()
                 .collect { restartSession() }
+        }
+        // A "device not approved" block is about one device: a different tracker gets its own try.
+        scope.launch {
+            settingsStore.settings
+                .combine(_tracker) { s, t -> effectiveDevice(s, t) }
+                .distinctUntilChanged()
+                .collect { device ->
+                    val blocked = settingsStore.status.value.blockedMessage
+                    if (device.isNotEmpty() && blocked != null && "(404)" in blocked) {
+                        settingsStore.updateStatus { it.copy(blockedMessage = null) }
+                        scheduleUpload()
+                    }
+                }
         }
         scope.launch {
             var wasOn = false
@@ -131,7 +152,7 @@ class CoverageLogger private constructor(context: Context) {
         // A new link may be a different tracker (or a reflashed one): its identity is
         // unknown until the ViewModel reads its config and calls [setTracker].
         _tracker.value = null
-        _runtime.value = _runtime.value.copy(reconnecting = false)
+        _runtime.update { it.copy(reconnecting = false) }
         restartSession()
     }
 
@@ -142,12 +163,12 @@ class CoverageLogger private constructor(context: Context) {
     fun detach(reconnecting: Boolean = false) {
         transport = null
         _tracker.value = null
-        _runtime.value = _runtime.value.copy(reconnecting = reconnecting && isEnabled)
+        _runtime.update { it.copy(reconnecting = reconnecting && isEnabled) }
         restartSession()
     }
 
     fun setReconnecting(on: Boolean) {
-        _runtime.value = _runtime.value.copy(reconnecting = on && isEnabled)
+        _runtime.update { it.copy(reconnecting = on && isEnabled) }
         updateService()
     }
 
@@ -187,14 +208,14 @@ class CoverageLogger private constructor(context: Context) {
             // can never run after a newer session subscribed.
             withContext(NonCancellable) { previous?.cancelAndJoin() }
             if (link == null || !s.enabled) {
-                _runtime.value = _runtime.value.copy(logging = false, linkError = null)
+                _runtime.update { it.copy(logging = false, linkError = null) }
                 updateService()
                 return@launch
             }
             if (device.isEmpty()) {
                 val why = if (tracker == null) "Reading the tracker's callsign…"
                     else "The tracker has no callsign set. Set one in its config, or enter a device callsign here"
-                _runtime.value = _runtime.value.copy(logging = false, linkError = why)
+                _runtime.update { it.copy(logging = false, linkError = why) }
                 updateService()
                 return@launch
             }
@@ -221,11 +242,11 @@ class CoverageLogger private constructor(context: Context) {
             try {
                 link.setKissNotifications(true)
             } catch (e: Exception) {
-                _runtime.value = _runtime.value.copy(logging = false, linkError = e.message ?: "Couldn't subscribe to KISS")
+                _runtime.update { it.copy(logging = false, linkError = e.message ?: "Couldn't subscribe to KISS") }
                 updateService()
                 return
             }
-            _runtime.value = _runtime.value.copy(logging = true, device = device, sent = 0, heard = 0, linkError = null)
+            _runtime.update { it.copy(logging = true, device = device, sent = 0, heard = 0, linkError = null) }
             updateService()
             // Upload every minute while connected and online; WorkManager covers the rest.
             sessionScope.launch {
@@ -242,9 +263,28 @@ class CoverageLogger private constructor(context: Context) {
             if (transport === link && link.isOpen) {
                 withContext(NonCancellable) { runCatching { link.setKissNotifications(false) } }
             }
-            _runtime.value = _runtime.value.copy(logging = false)
+            _runtime.update { it.copy(logging = false) }
             updateService()
             if (settings.enabled) scheduleUpload()
+        }
+    }
+
+    private suspend fun insertWithRetry(rows: List<LogQueueRow>) {
+        var wait = 200L
+        repeat(INSERT_ATTEMPTS) { attempt ->
+            try {
+                dao.insert(rows)
+                return
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                if (attempt == INSERT_ATTEMPTS - 1) {
+                    Log.w(TAG, "queue insert failed; ${rows.size} entries lost", e)
+                    settingsStore.updateStatus { it.copy(lastError = "Couldn't save ${rows.size} log entries: ${e.message ?: e.javaClass.simpleName}") }
+                    return
+                }
+                delay(wait)
+                wait *= 4
+            }
         }
     }
 
@@ -252,7 +292,7 @@ class CoverageLogger private constructor(context: Context) {
         if (entries.isEmpty()) return
         val tx = entries.count { it.type == CoverageEntryType.TX }
         val rx = entries.count { it.type == CoverageEntryType.RX }
-        _runtime.value = _runtime.value.let { it.copy(sent = it.sent + tx, heard = it.heard + rx) }
+        _runtime.update { it.copy(sent = it.sent + tx, heard = it.heard + rx) }
         inserts.trySend(entries.map { it.toRow(device) })
     }
 
@@ -273,6 +313,11 @@ class CoverageLogger private constructor(context: Context) {
         _uploading.value = true
         val result = try {
             uploader.uploadAll(s.baseUrl, s.apiKey)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            // Database or encoding trouble: nothing was deleted, so try again later.
+            Log.w(TAG, "upload failed", e)
+            UploadResult.Retry("Upload failed: ${e.message ?: e.javaClass.simpleName}")
         } finally {
             _uploading.value = false
         }
@@ -311,20 +356,31 @@ class CoverageLogger private constructor(context: Context) {
     private fun isOnline(): Boolean {
         val cm = app.getSystemService(ConnectivityManager::class.java) ?: return false
         val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        // VALIDATED: Android has confirmed real internet, not a Wi-Fi sign-in page.
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
     // -------------------------------------------------------------------------
     // Foreground service
     // -------------------------------------------------------------------------
 
-    /** The service runs while the logger is on and a tracker is connected (or being reconnected). */
+    /**
+     * The service runs while the logger is on and a tracker is connected (or being
+     * reconnected). It stays up across a session restart on the same link (reading the
+     * callsign, a settings change): Android 12+ won't let it start again from the background.
+     */
     val serviceWanted: Boolean
-        get() = isEnabled && (_runtime.value.logging || _runtime.value.reconnecting)
+        get() = isEnabled && (transport != null || _runtime.value.logging || _runtime.value.reconnecting)
 
+    /** We asked the service to stop and it may not have finished ([LoggerService.running] still true). */
+    @Volatile private var stopRequested = false
+
+    @Synchronized
     private fun updateService() {
         if (serviceWanted) {
-            if (!LoggerService.running) {
+            if (!LoggerService.running || stopRequested) {
+                stopRequested = false
                 try {
                     ContextCompat.startForegroundService(app, Intent(app, LoggerService::class.java))
                 } catch (e: Exception) {
@@ -333,7 +389,8 @@ class CoverageLogger private constructor(context: Context) {
                     Log.w(TAG, "couldn't start logger service: ${e.javaClass.simpleName}")
                 }
             }
-        } else if (LoggerService.running) {
+        } else if (LoggerService.running && !stopRequested) {
+            stopRequested = true
             app.stopService(Intent(app, LoggerService::class.java))
         }
     }

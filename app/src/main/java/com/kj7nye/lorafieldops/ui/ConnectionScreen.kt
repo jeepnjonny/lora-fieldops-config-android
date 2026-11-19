@@ -165,15 +165,10 @@ private fun UsbSection(
     OutlinedButton(onClick = onRefresh) { Text("Refresh devices") }
 }
 
-/** Request USB permission if needed, then connect. */
+/** Request USB permission if needed (answers at once when already held), then connect. */
 private fun requestPermissionAndConnect(vm: ConfigViewModel, driver: UsbSerialDriver) {
-    val device = driver.device
-    if (vm.serialManager.hasPermission(device)) {
-        vm.connectUsb(driver)
-    } else {
-        vm.serialManager.requestPermission(device) { granted ->
-            if (granted) vm.connectUsb(driver)
-        }
+    vm.serialManager.requestPermission(driver.device) { granted ->
+        if (granted) vm.connectUsb(driver)
     }
 }
 

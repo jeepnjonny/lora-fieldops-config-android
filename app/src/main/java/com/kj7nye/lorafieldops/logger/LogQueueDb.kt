@@ -34,6 +34,9 @@ interface LogQueueDao {
     @Query("SELECT * FROM log_queue ORDER BY id LIMIT 1")
     suspend fun oldest(): LogQueueRow?
 
+    @Query("SELECT * FROM log_queue WHERE device NOT IN (:exclude) ORDER BY id LIMIT 1")
+    suspend fun oldestExcluding(exclude: List<String>): LogQueueRow?
+
     @Query("SELECT * FROM log_queue WHERE device = :device ORDER BY id LIMIT :limit")
     suspend fun oldestForDevice(device: String, limit: Int): List<LogQueueRow>
 
@@ -42,9 +45,6 @@ interface LogQueueDao {
 
     @Query("SELECT COUNT(*) FROM log_queue")
     fun countFlow(): Flow<Int>
-
-    @Query("SELECT COUNT(*) FROM log_queue")
-    suspend fun count(): Int
 }
 
 @Database(entities = [LogQueueRow::class], version = 1, exportSchema = false)
@@ -63,9 +63,18 @@ abstract class LogQueueDb : RoomDatabase() {
 
 /** [UploadQueue] on Room. SQLite caps bound parameters, so deletes go in chunks. */
 class RoomUploadQueue(private val dao: LogQueueDao) : UploadQueue {
-    override suspend fun nextBatch(limit: Int): List<QueuedEntry> {
-        val first = dao.oldest() ?: return emptyList()
-        return dao.oldestForDevice(first.device, limit).mapNotNull { it.toQueued() }
+    override suspend fun nextBatch(limit: Int, exclude: Set<String>): List<QueuedEntry> {
+        while (true) {
+            val first = (if (exclude.isEmpty()) dao.oldest() else dao.oldestExcluding(exclude.toList()))
+                ?: return emptyList()
+            val rows = dao.oldestForDevice(first.device, limit)
+            // A row with a type this build doesn't know can never be sent; drop it rather
+            // than let it sit at the head of the queue.
+            val unknown = rows.filter { CoverageEntryType.fromWire(it.type) == null }.map { it.id }
+            if (unknown.isNotEmpty()) dao.deleteIds(unknown)
+            val batch = rows.mapNotNull { it.toQueued() }
+            if (batch.isNotEmpty()) return batch
+        }
     }
 
     override suspend fun delete(ids: List<Long>) {
