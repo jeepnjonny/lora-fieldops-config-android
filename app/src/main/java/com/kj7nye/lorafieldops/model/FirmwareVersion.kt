@@ -26,7 +26,7 @@ data class FirmwareVersion(val major: Int, val minor: Int, val patch: Int) : Com
 
         // Feature floors, verified against tagged firmware source at
         // github.com/KJ7NYE/LoRa_FieldOps_APRS_Tracker (src/serial_setup.cpp).
-        /** PHG beacon, OTA-DFU, and on-demand tx comment/status commands. */
+        /** PHG beacon and on-demand tx comment/status commands (also OTA-DFU, not exposed in the app yet). */
         val MIN_PHG = FirmwareVersion(1, 1, 0)
         /** `aprsiss downlink` toggle and `wifista scan|status`. */
         val MIN_APRSIS_DOWNLINK = FirmwareVersion(1, 1, 8)

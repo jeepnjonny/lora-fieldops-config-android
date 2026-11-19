@@ -693,24 +693,6 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Resets an nRF52 tracker into the Nordic OTA DFU bootloader. ESP32 boards don't
-     * build this command in, so the firmware replies "unknown command" there instead
-     * of rebooting — checked explicitly so we don't disconnect a device that never left.
-     * On success the device drops off USB serial once it enters DFU mode, so we
-     * disconnect right after — reflashing continues via the nRF Connect app.
-     */
-    fun triggerOtaDfu() {
-        viewModelScope.launch {
-            val r = protocol?.sendCommand("otadfu")
-            if (r is CommandResult.Ok && r.text.contains("unknown command")) {
-                snack("OTA DFU is only available on nRF52 boards")
-            } else if (report(r, "OTA DFU", ok = "Entering OTA DFU mode — use nRF Connect to upload firmware")) {
-                disconnect()
-            }
-        }
-    }
-
     // -------------------------------------------------------------------------
     // Per-field command senders
     // Each mutates the local config state immediately for snappy UI, then sends
