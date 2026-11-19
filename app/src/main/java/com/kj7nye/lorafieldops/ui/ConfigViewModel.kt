@@ -148,6 +148,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     private val logTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
     private var connectionEventJob: Job? = null
+    /** Setup-mode handshake and first config load of the current session. */
+    private var setupJob: Job? = null
     private var logCollectorJob: Job? = null
     private var locationListener: LocationListener? = null
     private var locationTimeoutJob: Job? = null
@@ -205,6 +207,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         // Track as a Job so disconnect() can cancel it before the port close triggers
         // a Lost event that would overwrite the Disconnected state we already set.
         connectionEventJob?.cancel()
+        setupJob?.cancel()
+        setupJob = null
         connectionEventJob = viewModelScope.launch {
             link.connectionEvents.collect { event ->
                 when (event) {
@@ -214,10 +218,14 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                     is ConnectionEvent.Opened -> {
                         _connectionState.value = ConnectionState.Connected(event.label, link.kind)
                         if (link is BleTransport) coverageLogger.attach(link)
-                        enterSetupAndLoad(proto, link.kind)
+                        // Own job: the handshake can take 45 s+ and a Lost/Error arriving
+                        // meanwhile must be handled right away, not after it.
+                        setupJob?.cancel()
+                        setupJob = viewModelScope.launch { enterSetupAndLoad(proto, link.kind) }
                     }
                     is ConnectionEvent.Error -> {
                         _connectionState.value = ConnectionState.Error(event.message)
+                        setupJob?.cancel()
                         proto.close()
                         protocol = null
                         if (link is BleTransport) coverageLogger.detach(reconnecting = reconnectJob?.isActive == true)
@@ -225,6 +233,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     is ConnectionEvent.Lost -> {
                         _connectionState.value = ConnectionState.Error("Disconnected: ${event.reason}")
+                        setupJob?.cancel()
                         proto.close()
                         protocol = null
                         val autoReconnect = link is BleTransport && coverageLogger.isEnabled
@@ -315,6 +324,8 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         // closes cannot overwrite the Disconnected state we're about to set.
         connectionEventJob?.cancel()
         connectionEventJob = null
+        setupJob?.cancel()
+        setupJob = null
         logCollectorJob?.cancel()
         logCollectorJob = null
         fieldDebounceJobs.values.forEach { it.cancel() }

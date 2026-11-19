@@ -117,6 +117,9 @@ class ProtocolHandler(
         } catch (e: TimeoutCancellationException) {
             entryDeferred = null
             return CommandResult.Timeout
+        } catch (e: CancellationException) {
+            entryDeferred = null
+            throw e
         } catch (e: Exception) {
             entryDeferred = null
             return CommandResult.Err(e.message ?: "entry failed")
@@ -198,6 +201,9 @@ class ProtocolHandler(
         } catch (e: TimeoutCancellationException) {
             importDeferred = null
             CommandResult.Timeout
+        } catch (e: CancellationException) {
+            importDeferred = null
+            throw e
         } catch (e: Exception) {
             importDeferred = null
             CommandResult.Err(e.message ?: "import failed")

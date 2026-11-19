@@ -3,7 +3,6 @@ package com.kj7nye.lorafieldops
 import android.content.Intent
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -36,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.core.content.IntentCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -64,8 +64,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Handle USB_DEVICE_ATTACHED intent (device plugged in while app was closed)
-        handleUsbIntent(intent)
+        // Handle USB_DEVICE_ATTACHED intent (device plugged in while app was closed).
+        // Not on recreation (rotation etc.): the launch intent is still the attach intent,
+        // and handling it again would reopen the port and drop unsaved edits.
+        if (savedInstanceState == null) handleUsbIntent(intent)
 
         setContent {
             AppTheme { MainNavigation(vm) }
@@ -80,16 +82,13 @@ class MainActivity : ComponentActivity() {
 
     private fun handleUsbIntent(intent: Intent?) {
         if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return
-        val device: UsbDevice = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-        } ?: return
-        val usbManager = getSystemService(USB_SERVICE) as UsbManager
-        val drivers = com.hoho.android.usbserial.driver.UsbSerialProber
-            .getDefaultProber().findAllDrivers(usbManager)
-        val driver = drivers.firstOrNull { it.device == device } ?: return
+        // Consume it so a later recreation can't act on it again.
+        intent.action = null
+        // Already in a session (or opening one): leave it alone.
+        val state = vm.connectionState.value
+        if (state is ConnectionState.Connected || state is ConnectionState.Connecting) return
+        val device = IntentCompat.getParcelableExtra(intent, UsbManager.EXTRA_DEVICE, UsbDevice::class.java) ?: return
+        val driver = vm.serialManager.findDevices().firstOrNull { it.device == device } ?: return
         vm.serialManager.requestPermission(device) { granted ->
             if (granted) vm.connectUsb(driver)
         }
