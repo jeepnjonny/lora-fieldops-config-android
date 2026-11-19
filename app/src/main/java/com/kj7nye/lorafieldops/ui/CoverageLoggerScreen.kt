@@ -134,6 +134,8 @@ fun CoverageLoggerScreen(
                     else -> "Waiting for a Bluetooth tracker connection"
                 }
                 InfoRow("Logger", state)
+                val loggingAs = settings.device.ifBlank { trackerDevice(tracker) }
+                InfoRow("Logging as", loggingAs.ifEmpty { "— (no tracker connected)" })
                 InfoRow("Queued", "$queued")
                 InfoRow(
                     "Last upload",
@@ -244,22 +246,32 @@ fun CoverageLoggerScreen(
                     },
                 )
                 // Blank = follow the connected tracker's own callsign (and object name, if set).
+                // Default: follow the connected tracker (stored as a blank device). The field
+                // then shows the callsign actually in use, read-only, so it's clear what is sent.
                 val fromTracker = trackerDevice(tracker)
+                var overriding by remember(settings.device) { mutableStateOf(settings.device.isNotBlank()) }
+                SwitchRow("Use the connected tracker's callsign", !overriding) { follow ->
+                    overriding = !follow
+                    // Start an override from the tracker's own callsign, the usual thing to tweak.
+                    device = if (follow) "" else device.ifBlank { fromTracker }
+                }
                 OutlinedTextField(
-                    value = device,
+                    value = if (overriding) device else fromTracker,
                     onValueChange = { device = it },
-                    label = { Text("Device callsign") },
-                    placeholder = { Text(fromTracker.ifEmpty { "Connected tracker's callsign" }) },
+                    readOnly = !overriding,
+                    label = { Text(if (overriding) "Device callsign" else "Device callsign (from tracker)") },
+                    placeholder = if (!overriding && fromTracker.isEmpty()) {
+                        { Text("Read when a tracker connects over Bluetooth") }
+                    } else null,
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     supportingText = {
                         Text(
                             when {
-                                device.isNotBlank() -> "Leave blank to follow the connected tracker. " +
-                                    "Must match the website, e.g. K7ABC-9, or SENDER:OBJECT for an object"
-                                fromTracker.isNotEmpty() -> "Following the connected tracker: $fromTracker. Type another to override it"
-                                else -> "Blank uses the connected tracker's callsign, plus its tactical " +
-                                    "callsign as SENDER:OBJECT when it beacons as an object"
+                                overriding -> "Must match the website, e.g. K7ABC-9, or SENDER:OBJECT for an object"
+                                fromTracker.isNotEmpty() -> "Read from the connected tracker; its tactical name is " +
+                                    "added as SENDER:OBJECT when it beacons as an object"
+                                else -> "Connect a tracker over Bluetooth and its callsign is filled in here"
                             },
                         )
                     },

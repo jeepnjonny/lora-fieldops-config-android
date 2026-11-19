@@ -37,6 +37,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -45,6 +46,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -165,18 +167,43 @@ fun ConfigScreen(vm: ConfigViewModel) {
 
         // ---- Main settings ------------------------------------------------------
 
+        // What the tracker beacons as: CALLSIGN, or CALLSIGN:OBJECT when a tactical name is set.
+        val identity = if (b.tacticalCallsign.isBlank()) b.callsign else "${b.callsign}:${b.tacticalCallsign}"
         Section(
             "Beacon",
-            summary = listOf(b.callsign, b.comment).filter { it.isNotBlank() }.joinToString(" · "),
+            summaryContent = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(identity, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                    AprsSymbolIcon(b.overlay, b.symbol, Modifier.padding(horizontal = 6.dp), size = 20.dp)
+                    if (b.comment.isNotBlank()) {
+                        Text(
+                            b.comment,
+                            modifier = Modifier.weight(1f, fill = false),
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            },
             edited = edited { it.beacons[0].copy(smartBeaconActive = false, smartBeaconSetting = 0) },
             initiallyExpanded = true,
         ) {
             LabeledTextField("Callsign", b.callsign) { vm.setCallsign(it) }
-            LabeledTextField("Symbol (1 char)", b.symbol) {
-                singleCharEdit(b.symbol, it)?.let(vm::setSymbol)
-            }
-            LabeledTextField("Overlay (1 char)", b.overlay) {
-                singleCharEdit(b.overlay, it)?.let(vm::setOverlay)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LabeledTextField("Symbol (1 char)", b.symbol) {
+                        singleCharEdit(b.symbol, it)?.let(vm::setSymbol)
+                    }
+                    LabeledTextField("Overlay / table (1 char)", b.overlay) {
+                        singleCharEdit(b.overlay, it)?.let(vm::setOverlay)
+                    }
+                }
+                // Live preview of the map icon these two characters select.
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    AprsSymbolIcon(b.overlay, b.symbol, size = 48.dp)
+                    Text("${b.overlay}${b.symbol}", style = MaterialTheme.typography.labelMedium)
+                }
             }
             DropdownField("Mic-E", MIC_E_OPTIONS, b.micE) { vm.setMicE(it) }
             LabeledTextField("Comment", b.comment) { vm.setComment(it) }
@@ -646,6 +673,8 @@ private fun Section(
     title: String,
     summary: String? = null,
     edited: Boolean = false,
+    /** Richer collapsed summary (e.g. with an icon); used instead of [summary] when given. */
+    summaryContent: (@Composable () -> Unit)? = null,
     initiallyExpanded: Boolean = false,
     content: @Composable () -> Unit,
 ) {
@@ -676,7 +705,11 @@ private fun Section(
                             )
                         }
                     }
-                    if (!expanded && !summary.isNullOrBlank()) {
+                    if (!expanded && summaryContent != null) {
+                        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) {
+                            summaryContent()
+                        }
+                    } else if (!expanded && !summary.isNullOrBlank()) {
                         Text(
                             summary,
                             style = MaterialTheme.typography.bodyMedium,

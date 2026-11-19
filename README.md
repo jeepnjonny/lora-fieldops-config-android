@@ -42,3 +42,12 @@ configuring a tracker. While it is off, the app sends nothing anywhere.
 - The upload key is stored encrypted on the phone. If the website rejects the key
   or the device, uploads stop and the logger screen shows why. They start again
   after you change a setting.
+
+## Credits
+
+APRS symbol icons are from [hessu/aprs-symbols](https://github.com/hessu/aprs-symbols)
+by Heikki Hannikainen, OH7LZB, the set used by aprs.fi. Licensing varies by symbol:
+Hessu's original drawings are CC BY-SA 2.0, many are vectorized from the classic
+WA8LMF / G4IDE / KH4G set, and a few are company logos owned by their companies. See
+that repository's [COPYRIGHT.md](https://github.com/hessu/aprs-symbols/blob/master/COPYRIGHT.md)
+for each symbol.
