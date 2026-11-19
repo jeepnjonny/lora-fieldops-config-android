@@ -1015,11 +1015,14 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      * every keystroke would get its own key and its own send.
      */
     private fun sendField(
-        cmd: String,
+        rawCmd: String,
         debounceMs: Long = 0L,
-        fieldKey: String = cmd.substringBeforeLast(" "),
+        fieldKey: String = rawCmd.substringBeforeLast(" "),
         localUpdate: TrackerConfig.() -> Unit,
     ) {
+        // A pasted line break would end the command early and run the rest as a second
+        // command on the tracker; no setting value needs control characters.
+        val cmd = rawCmd.filterNot { it.isISOControl() }
         _config.value?.localUpdate() ?: return
         _dirty.value = true
 

@@ -144,6 +144,8 @@ class ProtocolHandler(
         completeOn: String? = null,
     ): CommandResult {
         if (closed) return CommandResult.Err(CLOSED)
+        // One command per line: an embedded CR/LF would run the rest as a second command.
+        if (cmdText.any { it == '\r' || it == '\n' }) return CommandResult.Err("command contains a line break")
         val cmd = PendingCommand(cmdText, timeoutMs * timeoutScale, completeOn)
         try {
             cmdQueue.send(cmd)

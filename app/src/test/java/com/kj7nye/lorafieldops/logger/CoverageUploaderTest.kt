@@ -219,6 +219,13 @@ class CoverageUploaderTest {
     }
 
     @Test
+    fun plainHttpToAnotherHostSendsNothing() = runBlocking {
+        fill(1)
+        assertTrue(uploader.uploadAll("http://example.org/aprs-coverage", "acv_k") is UploadResult.Skipped)
+        assertEquals(1, queue.rows.size)
+    }
+
+    @Test
     fun emptyQueueSendsNothing() = runBlocking {
         val r = uploader.uploadAll(baseUrl, "acv_k") as UploadResult.Done
         assertEquals(0, r.sent)

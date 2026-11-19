@@ -127,12 +127,21 @@ fun CoverageLoggerScreen(
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Website", style = MaterialTheme.typography.titleMedium)
+                val urlError = baseUrlError(baseUrl)
+                val keyWillClear = urlError == null && settings.apiKey.isNotEmpty() &&
+                    hostChanged(settings.baseUrl, baseUrl) && apiKey.trim() == settings.apiKey
                 OutlinedTextField(
                     value = baseUrl,
                     onValueChange = { baseUrl = it },
                     label = { Text("Website address") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
+                    isError = urlError != null,
+                    supportingText = when {
+                        urlError != null -> ({ Text(urlError) })
+                        keyWillClear -> ({ Text("A different website: saving clears the upload key. Enter that site's key.") })
+                        else -> null
+                    },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 )
                 val keyLooksWrong = apiKey.isNotBlank() && !apiKey.trim().startsWith("acv_")
@@ -188,7 +197,7 @@ fun CoverageLoggerScreen(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-                Button(onClick = { vm.saveFields(baseUrl, apiKey, device) }, enabled = fieldsChanged) {
+                Button(onClick = { vm.saveFields(baseUrl, apiKey, device) }, enabled = fieldsChanged && urlError == null) {
                     Text("Save")
                 }
             }
@@ -202,7 +211,8 @@ fun CoverageLoggerScreen(
                 SwitchRow("Record setting changes as device notes", settings.recordSettingNotes, vm::setRecordNotes)
                 Text(
                     "Notes are added when you save settings to this tracker, e.g. \"beacon rate 120 → 60 s\". " +
-                        "Passwords, PINs, passcodes and unlock tokens are never included.",
+                        "Passwords, PINs, passcodes, unlock tokens, the fixed position, Wi-Fi networks, " +
+                        "the APRS-IS server and filter and the Bluetooth name are never included.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

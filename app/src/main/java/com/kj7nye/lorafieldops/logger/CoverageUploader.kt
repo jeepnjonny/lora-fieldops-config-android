@@ -107,6 +107,7 @@ class CoverageUploader(
     suspend fun uploadAll(baseUrl: String, apiKey: String): UploadResult = mutex.withLock {
         if (apiKey.isBlank()) return UploadResult.Skipped("No upload key set")
         if (baseUrl.isBlank()) return UploadResult.Skipped("No website address set")
+        if (!isSecureOrLoopback(baseUrl)) return UploadResult.Skipped("Website address must start with https://")
         val url = baseUrl.trim().trimEnd('/') + "/api/devicelog"
 
         var sent = 0; var accepted = 0; var duplicates = 0; var ignored = 0
@@ -193,6 +194,13 @@ private fun CoverageEntry.toWire() = WireEntry(
     rssi = rssi,
     snr = snr,
 )
+
+/** The key is only ever sent over https (plain http only to this machine, for tests). */
+private fun isSecureOrLoopback(baseUrl: String): Boolean {
+    val u = runCatching { URL(baseUrl.trim()) }.getOrNull() ?: return false
+    return u.protocol.equals("https", ignoreCase = true) ||
+        (u.protocol.equals("http", ignoreCase = true) && u.host in setOf("127.0.0.1", "localhost", "::1", "[::1]"))
+}
 
 /** A short, human-readable message from an error reply body (`{"error": "..."}` or plain text). */
 private fun serverMessage(body: String): String {

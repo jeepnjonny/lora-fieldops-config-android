@@ -36,8 +36,9 @@ configuring a tracker. While it is off, the app sends nothing anywhere.
 - While logging, a notification ("Logging K7ABC-9: N sent, M heard, Q queued") keeps it
   running with the screen off. If the link drops, the app keeps reconnecting to the same tracker.
 - Optional: "Record setting changes as device notes" adds a note such as
-  `beacon rate 120 → 60 s` when you save settings. Passwords, PINs, passcodes and
-  unlock tokens are never included.
+  `beacon rate 120 → 60 s` when you save settings. Passwords, PINs, passcodes,
+  unlock tokens, the fixed position, Wi-Fi networks, the APRS-IS server and filter
+  and the Bluetooth name are never included.
 - The upload key is stored encrypted on the phone. If the website rejects the key
   or the device, uploads stop and the logger screen shows why. They start again
   after you change a setting.

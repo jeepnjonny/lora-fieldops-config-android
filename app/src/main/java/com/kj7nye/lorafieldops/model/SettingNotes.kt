@@ -13,7 +13,23 @@ private val noteJson = Json { encodeDefaults = true }
  * Leaf names whose values must never leave the phone in a note: Wi-Fi and AP passwords,
  * the Bluetooth PIN, the APRS-IS passcode and the remote-config unlock token.
  */
-private val SECRET_LEAVES = setOf("password", "pin", "passcode", "token")
+private val SECRET_LEAVES = setOf("password", "pin", "passcode", "token", "ssid")
+
+/**
+ * Settings that are private rather than secret: notes are uploaded to a shared website,
+ * so a fixed position (home location), Wi-Fi networks, the APRS-IS server and filter
+ * (a range filter can hold a position) and the Bluetooth name are left out too.
+ * Matched against the path without list indexes, as a prefix.
+ */
+private val PRIVATE_PATHS = listOf(
+    "fixedPosition", "wifiSTA", "wifiAP", "aprsIS.server", "aprsIS.filter", "bluetooth.deviceName",
+)
+
+private fun isPrivate(path: String): Boolean {
+    if (path.split('.').any { it.substringBefore('[').lowercase() in SECRET_LEAVES }) return true
+    val key = path.replace(Regex("""\[\d+]"""), "")
+    return PRIVATE_PATHS.any { key == it || key.startsWith("$it.") }
+}
 
 /** Friendly label and unit for the settings people compare most often. Others use their JSON path. */
 private val LABELS: Map<String, Pair<String, String>> = mapOf(
@@ -46,14 +62,14 @@ private val LABELS: Map<String, Pair<String, String>> = mapOf(
 
 /**
  * Human-readable notes for every setting that differs between [before] and [after],
- * e.g. `beacon rate 120 → 60 s`. Secret values are never included: a changed secret
- * isn't mentioned at all.
+ * e.g. `beacon rate 120 → 60 s`. Secret and private values ([SECRET_LEAVES],
+ * [PRIVATE_PATHS]) are never included: such a change isn't mentioned at all.
  */
 fun settingChangeNotes(before: TrackerConfig, after: TrackerConfig): List<String> {
     val old = flatten(noteJson.encodeToJsonElement(TrackerConfig.serializer(), before))
     val new = flatten(noteJson.encodeToJsonElement(TrackerConfig.serializer(), after))
     return (old.keys + new.keys).distinct().mapNotNull { path ->
-        if (path.split('.').any { it.substringBefore('[').lowercase() in SECRET_LEAVES }) return@mapNotNull null
+        if (isPrivate(path)) return@mapNotNull null
         val a = old[path]; val b = new[path]
         if (a == b) return@mapNotNull null
         // Single-element lists (beacons[0], lora[0]) read better without the index.

@@ -41,6 +41,19 @@ class SettingNotesTest {
         listOf("hunter2hunter2", "wifikey123", "654321", "12345", "unlocktoken").forEach {
             assertTrue("leaked $it in: $notes", !notes.contains(it))
         }
-        assertTrue("non-secret SSID change is still noted", notes.contains("Home"))
+        assertTrue("SSID left out: $notes", !notes.contains("Home"))
+    }
+
+    @Test
+    fun privateSettingsNeverAppear() {
+        val before = TrackerConfig()
+        val after = before.copy(
+            fixedPosition = FixedPositionConfig(latitude = 43.6111f, longitude = -116.2067f, elevation = 824f),
+            aprsIS = before.aprsIS.copy(server = "my.private.host", filter = "r/43.61/-116.20/50"),
+            bluetooth = before.bluetooth.copy(deviceName = "Jane's tracker"),
+            other = before.other.copy(nonSmartBeaconRateSec = 60),
+        )
+        val notes = settingChangeNotes(before, after)
+        assertEquals(listOf("beacon rate 900 → 60 s"), notes)
     }
 }
