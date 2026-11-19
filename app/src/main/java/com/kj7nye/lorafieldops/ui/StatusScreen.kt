@@ -1,10 +1,11 @@
 package com.kj7nye.lorafieldops.ui
 
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.content.ClipData
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,18 +13,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryFull
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -39,53 +42,69 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatusScreen(vm: ConfigViewModel) {
     val statusLines by vm.statusLines.collectAsStateWithLifecycle()
+    val loading by vm.statusLoading.collectAsStateWithLifecycle()
     var showOtaDfuDialog by remember { mutableStateOf(false) }
 
-    // Load version on entry
-    LaunchedEffect(Unit) { vm.readFirmwareVersion() }
+    // Everything on entry: the reads queue on the link and fill in card by card.
+    LaunchedEffect(Unit) { vm.refreshAllStatus() }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Live Status", style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Live Status",
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.weight(1f).semantics { heading() },
+            )
+            TextButton(onClick = { vm.refreshAllStatus() }, enabled = loading.isEmpty()) {
+                Icon(Icons.Default.Refresh, contentDescription = null)
+                Text("Refresh all", modifier = Modifier.padding(start = 6.dp))
+            }
+        }
 
-        // Battery
         StatusCard(
-            icon = { Icon(Icons.Default.BatteryFull, null) },
+            icon = Icons.Default.BatteryFull,
             title = "Battery",
+            loading = StatusGroup.BATTERY in loading,
             body = listOf(
-                "Voltage" to (statusLines["bat.voltage"] ?: "—"),
-                "Percent" to (statusLines["bat.percent"]?.let { "$it%" } ?: "—"),
+                "Voltage" to (statusLines["bat.voltage"]?.let { "$it V" } ?: "—"),
+                "Charge" to (statusLines["bat.percent"]?.let { "$it%" } ?: "—"),
             ),
             onRefresh = { vm.readBattery() },
         )
 
-        // GPS: valid / location (copyable) / altitude, one per line
         StatusCard(
-            icon = { Icon(Icons.Default.GpsFixed, null) },
+            icon = Icons.Default.GpsFixed,
             title = "GPS",
+            loading = StatusGroup.GPS in loading,
             onRefresh = { vm.readGps() },
         ) {
             GpsStatusBody(statusLines)
         }
 
-        // APRS-IS
         val aprsIsConnected = statusLines["aprsIS.connected"]
         StatusCard(
-            icon = { Icon(Icons.Default.Wifi, null) },
+            icon = Icons.Default.Cloud,
             title = "APRS-IS",
+            loading = StatusGroup.APRS_IS in loading,
             body = buildList {
                 add("Connected" to yesNo(aprsIsConnected))
                 if (aprsIsConnected == "true") {
@@ -96,57 +115,55 @@ fun StatusScreen(vm: ConfigViewModel) {
             onRefresh = { vm.readAprsIsStatus() },
         )
 
-        // WiFi STA
         val wifiConnected = statusLines["wifiSTA.connected"]
         StatusCard(
-            icon = { Icon(Icons.Default.Wifi, null) },
-            title = "WiFi STA",
+            icon = Icons.Default.Wifi,
+            title = "WiFi",
+            loading = StatusGroup.WIFI in loading,
             body = buildList {
                 add("Connected" to yesNo(wifiConnected))
                 if (wifiConnected == "true") {
-                    statusLines["wifiSTA.ssid"]?.takeIf { it.isNotEmpty() }?.let { add("SSID" to it) }
+                    statusLines["wifiSTA.ssid"]?.takeIf { it.isNotEmpty() }?.let { add("Network" to it) }
                     statusLines["wifiSTA.ip"]?.let { add("IP" to it) }
                 }
             },
             onRefresh = { vm.readWifiStaStatus() },
         )
 
-        // Firmware version
+        StatusCard(
+            icon = Icons.Default.Memory,
+            title = "Firmware",
+            loading = StatusGroup.VERSION in loading,
+            body = listOf("Version" to (statusLines["version"] ?: "—")),
+            onRefresh = { vm.readFirmwareVersion() },
+        )
+
         Card(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column {
-                    Text("Firmware", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        statusLines["version"] ?: "—",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-                IconButton(onClick = { vm.readFirmwareVersion() }) {
-                    Icon(Icons.Default.Refresh, "Refresh version")
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Send now", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { vm.txNow(TxBeacon.COMMENT) }) { Text("Comment beacon") }
+                    OutlinedButton(onClick = { vm.txNow(TxBeacon.STATUS) }) { Text("Status beacon") }
                 }
             }
         }
 
-        // Actions
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Actions", style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { vm.txNow(TxBeacon.COMMENT) }) { Text("Send comment now") }
-                    OutlinedButton(onClick = { vm.txNow(TxBeacon.STATUS) }) { Text("Send status now") }
-                }
-                Button(onClick = { showOtaDfuDialog = true }) { Text("Enter OTA DFU mode") }
-                Text(
-                    "nRF52 boards only — disconnects USB serial; reflash via nRF Connect.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        // Rarely needed and it ends the session, so it sits last and plain.
+        Column(Modifier.padding(top = 8.dp)) {
+            Text(
+                "Firmware update",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics { heading() },
+            )
+            Text(
+                "nRF52 boards only: reboots into the OTA DFU bootloader and ends this connection; " +
+                    "reflash with the nRF Connect app.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = { showOtaDfuDialog = true }) {
+                Text("Enter OTA DFU mode…", color = MaterialTheme.colorScheme.error)
             }
         }
     }
@@ -158,7 +175,7 @@ fun StatusScreen(vm: ConfigViewModel) {
             text = {
                 Text(
                     "The tracker will reboot into the Nordic DFU bootloader and drop off " +
-                        "this USB connection. You'll need the nRF Connect app to upload new " +
+                        "this connection. You'll need the nRF Connect app to upload new " +
                         "firmware. ESP32 boards don't support this and will report an error instead.",
                 )
             },
@@ -215,8 +232,8 @@ private fun GpsStatusBody(status: Map<String, String>) {
     val hasFix = valid == "1"
     val sats = status["gps.sats"]
 
-    StatusRow(
-        "Valid",
+    InfoRow(
+        "Fix",
         when {
             valid == null -> "—"
             hasFix -> if (sats != null) "Yes ($sats satellites)" else "Yes"
@@ -231,15 +248,9 @@ private fun GpsStatusBody(status: Map<String, String>) {
         val clipboard = LocalClipboard.current
         val scope = rememberCoroutineScope()
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "Location:",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.width(8.dp))
             // Selectable as well as copy-button so a long-press works too.
             SelectionContainer(modifier = Modifier.weight(1f, fill = false)) {
-                Text(location, style = MaterialTheme.typography.bodySmall)
+                InfoRow("Location", location)
             }
             IconButton(
                 onClick = {
@@ -247,47 +258,36 @@ private fun GpsStatusBody(status: Map<String, String>) {
                         clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Tracker location", location)))
                     }
                 },
-                modifier = Modifier.size(32.dp),
             ) {
-                Icon(Icons.Default.ContentCopy, "Copy location", modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.ContentCopy, "Copy location")
             }
         }
     } else {
-        StatusRow("Location", "—")
+        InfoRow("Location", "—")
     }
 
     val alt = status["gps.alt"]
-    StatusRow("Altitude", if (hasFix && alt != null) "$alt m" else "—")
-}
-
-@Composable
-private fun StatusRow(label: String, value: String) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            "$label:",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(value, style = MaterialTheme.typography.bodySmall)
-    }
+    InfoRow("Altitude", if (hasFix && alt != null) "$alt m" else "—")
 }
 
 /** Card with a simple list of label/value rows. */
 @Composable
 private fun StatusCard(
-    icon: @Composable () -> Unit,
+    icon: ImageVector,
     title: String,
+    loading: Boolean,
     body: List<Pair<String, String>>,
     onRefresh: () -> Unit,
-) = StatusCard(icon, title, onRefresh) {
-    body.forEach { (label, value) -> StatusRow(label, value) }
+) = StatusCard(icon, title, loading, onRefresh) {
+    body.forEach { (label, value) -> InfoRow(label, value) }
 }
 
-/** Card with custom [content] under the title. */
+/** Card with custom [content] under the title, and its own refresh button / spinner. */
 @Composable
 private fun StatusCard(
-    icon: @Composable () -> Unit,
+    icon: ImageVector,
     title: String,
+    loading: Boolean,
     onRefresh: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -295,21 +295,34 @@ private fun StatusCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(start = 12.dp, top = 4.dp, bottom = 12.dp),
             verticalAlignment = Alignment.Top,
         ) {
-            icon()
+            Icon(icon, contentDescription = null, modifier = Modifier.padding(top = 12.dp))
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = 12.dp),
+                    .padding(start = 12.dp, top = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(4.dp))
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.semantics { heading() },
+                )
+                Spacer(Modifier.height(2.dp))
                 content()
             }
-            IconButton(onClick = onRefresh) {
-                Icon(Icons.Default.Refresh, "Refresh $title")
+            // 48 dp either way, so the layout doesn't jump while loading.
+            Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                if (loading) {
+                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                } else {
+                    IconButton(onClick = onRefresh) {
+                        Icon(Icons.Default.Refresh, "Refresh $title")
+                    }
+                }
             }
         }
     }

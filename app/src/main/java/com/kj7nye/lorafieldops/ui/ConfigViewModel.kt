@@ -53,6 +53,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
@@ -93,6 +94,9 @@ private sealed interface LinkTarget {
     data class Usb(val driver: UsbSerialDriver) : LinkTarget
     data class Ble(val tracker: BleTrackerInfo) : LinkTarget
 }
+
+/** A Status screen card, for its loading spinner. */
+enum class StatusGroup { BATTERY, GPS, APRS_IS, WIFI, VERSION }
 
 /** A Save or Discard the tracker is working on. */
 enum class BusyAction { SAVING, DISCARDING }
@@ -157,6 +161,10 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _statusLines = MutableStateFlow<Map<String, String>>(emptyMap())
     val statusLines: StateFlow<Map<String, String>> = _statusLines.asStateFlow()
+
+    private val _statusLoading = MutableStateFlow<Set<StatusGroup>>(emptySet())
+    /** Status cards with a read in progress. */
+    val statusLoading: StateFlow<Set<StatusGroup>> = _statusLoading.asStateFlow()
 
     private val _importState = MutableStateFlow<ImportState>(ImportState.Idle)
     val importState: StateFlow<ImportState> = _importState.asStateFlow()
@@ -585,42 +593,53 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     // Live status reads
     // -------------------------------------------------------------------------
 
-    /** Firmware: `bat.voltage=X.XX bat.percent=YY`. */
-    fun readBattery() {
+    /** Reads every status card (the Status screen does this on entry). */
+    fun refreshAllStatus() {
+        readBattery(); readGps(); readAprsIsStatus(); readWifiStaStatus(); readFirmwareVersion()
+    }
+
+    /**
+     * Runs one status read, marking [group] as loading meanwhile so its card can show
+     * a spinner. A read of a group already in progress is skipped.
+     */
+    private fun readStatus(group: StatusGroup, block: suspend (ProtocolHandler) -> Unit) {
+        val proto = protocol ?: return
+        var started = false
+        _statusLoading.update { if (group in it) it else { started = true; it + group } }
+        if (!started) return
         viewModelScope.launch {
-            val r = protocol?.sendCommand("bat read") ?: return@launch
-            if (r is CommandResult.Ok) replaceStatusGroup("bat.", parseStatusTokens(r.text))
+            try { block(proto) } finally { _statusLoading.update { it - group } }
         }
     }
 
+    /** Firmware: `bat.voltage=X.XX bat.percent=YY`. */
+    fun readBattery() = readStatus(StatusGroup.BATTERY) { proto ->
+        val r = proto.sendCommand("bat read")
+        if (r is CommandResult.Ok) replaceStatusGroup("bat.", parseStatusTokens(r.text))
+    }
+
     /** Firmware: `gps.lat=… gps.lon=… gps.alt=… gps.sats=… gps.valid=0|1`. */
-    fun readGps() {
-        viewModelScope.launch {
-            val r = protocol?.sendCommand("gps read") ?: return@launch
-            if (r is CommandResult.Ok) replaceStatusGroup("gps.", parseStatusTokens(r.text))
-        }
+    fun readGps() = readStatus(StatusGroup.GPS) { proto ->
+        val r = proto.sendCommand("gps read")
+        if (r is CommandResult.Ok) replaceStatusGroup("gps.", parseStatusTokens(r.text))
     }
 
     /**
      * Firmware: `aprsIS.connected=true host=… port=… [server=…]` or `aprsIS.connected=false`.
      * Older firmware sends only the connected flag; the extra keys are then simply absent.
      */
-    fun readAprsIsStatus() {
-        viewModelScope.launch {
-            val r = protocol?.sendCommand("aprsiss status") ?: return@launch
-            if (r is CommandResult.Ok) {
-                replaceStatusGroup("aprsIS.", prefixKeys("aprsIS.", parseStatusTokens(r.text)))
-            }
+    fun readAprsIsStatus() = readStatus(StatusGroup.APRS_IS) { proto ->
+        val r = proto.sendCommand("aprsiss status")
+        if (r is CommandResult.Ok) {
+            replaceStatusGroup("aprsIS.", prefixKeys("aprsIS.", parseStatusTokens(r.text)))
         }
     }
 
     /** Firmware: `wifiSTA.connected=true ip=… ssid=<rest of line>` or `wifiSTA.connected=false`. */
-    fun readWifiStaStatus() {
-        viewModelScope.launch {
-            val r = protocol?.sendCommand("wifista status") ?: return@launch
-            if (r is CommandResult.Ok) {
-                replaceStatusGroup("wifiSTA.", prefixKeys("wifiSTA.", parseStatusTokens(r.text, restOfLineKey = "ssid")))
-            }
+    fun readWifiStaStatus() = readStatus(StatusGroup.WIFI) { proto ->
+        val r = proto.sendCommand("wifista status")
+        if (r is CommandResult.Ok) {
+            replaceStatusGroup("wifiSTA.", prefixKeys("wifiSTA.", parseStatusTokens(r.text, restOfLineKey = "ssid")))
         }
     }
 
@@ -630,7 +649,7 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
      * linger next to a newer "connected=false".
      */
     private fun replaceStatusGroup(prefix: String, fresh: Map<String, String>) {
-        _statusLines.value = _statusLines.value.filterKeys { !it.startsWith(prefix) } + fresh
+        _statusLines.update { lines -> lines.filterKeys { !it.startsWith(prefix) } + fresh }
     }
 
     /**
@@ -649,14 +668,12 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun readFirmwareVersion() {
-        viewModelScope.launch {
-            val r = protocol?.sendCommand("version") ?: return@launch
-            if (r is CommandResult.Ok) {
-                val versionText = r.text.removePrefix("version.date=").trim()
-                _statusLines.value = _statusLines.value + ("version" to versionText)
-                _firmwareVersion.value = FirmwareVersion.parse(versionText)
-            }
+    fun readFirmwareVersion() = readStatus(StatusGroup.VERSION) { proto ->
+        val r = proto.sendCommand("version")
+        if (r is CommandResult.Ok) {
+            val versionText = r.text.removePrefix("version.date=").trim()
+            _statusLines.update { it + ("version" to versionText) }
+            _firmwareVersion.value = FirmwareVersion.parse(versionText)
         }
     }
 
