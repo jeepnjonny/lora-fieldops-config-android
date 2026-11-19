@@ -974,19 +974,6 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     private fun snack(msg: String) { _snackMessage.value = msg }
 
     /**
-     * Applies [localUpdate] immediately to _config for a responsive UI, then sends [cmd].
-     *
-     * [debounceMs] > 0 coalesces rapid repeated calls for the same field (e.g. one per
-     * keystroke while typing a callsign) into a single send after the user pauses —
-     * only the final value goes over the wire instead of one command per character.
-     * Toggles/dropdowns/sliders fire once per user action already, so they pass the
-     * default 0 (send immediately).
-     *
-     * If the firmware rejects the value or the command times out, [lastError] is set
-     * and the local config is re-synced from the device so the UI doesn't keep showing
-     * a value the device never actually accepted.
-     */
-    /**
      * For fields the firmware insists on a value for: it answers an empty one with
      * "ERR" (e.g. "symbol must be 1 char"). An empty box is just the moment between
      * deleting the old value and typing the new one, so it stays a local edit: nothing
@@ -1009,6 +996,18 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Applies [localUpdate] immediately to _config for a responsive UI, then sends [rawCmd].
+     *
+     * [debounceMs] > 0 coalesces rapid repeated calls for the same field (e.g. one per
+     * keystroke while typing a callsign) into a single send after the user pauses —
+     * only the final value goes over the wire instead of one command per character.
+     * Toggles/dropdowns/sliders fire once per user action already, so they pass the
+     * default 0 (send immediately).
+     *
+     * If the firmware rejects the value or the command times out, [lastError] is set
+     * and the local config is re-synced from the device so the UI doesn't keep showing
+     * a value the device never actually accepted.
+     *
      * [fieldKey] identifies the field for debouncing and error display. The default
      * (command minus its last word) is only right for single-word values; callers whose
      * value can contain spaces (SSIDs, filters) pass the command prefix explicitly, or

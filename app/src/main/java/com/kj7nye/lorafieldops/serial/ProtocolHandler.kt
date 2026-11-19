@@ -44,9 +44,6 @@ sealed class CommandResult {
     object Timeout : CommandResult()
 }
 
-/** Current mode of the firmware's serial port. */
-enum class SerialMode { KISS, SETUP, LOG, UNKNOWN }
-
 /**
  * Protocol state machine on top of a [DeviceTransport] (USB serial or BLE).
  *
@@ -63,9 +60,6 @@ class ProtocolHandler(
     rxFlow: SharedFlow<ByteArray>,
     private val timeoutScale: Long = 1L,
 ) {
-    var mode: SerialMode = SerialMode.UNKNOWN
-        private set
-
     private val scope    = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val cmdQueue = Channel<PendingCommand>(Channel.UNLIMITED)
 
@@ -244,11 +238,6 @@ class ProtocolHandler(
             }
 
             accum.append(decoder.decode(bytes))
-
-            // Mode banner detection
-            if (accum.contains("SETUP MODE ACTIVE")) mode = SerialMode.SETUP
-            else if (accum.contains("[KISS TNC]"))   mode = SerialMode.KISS
-            else if (accum.contains("[LOG]"))        mode = SerialMode.LOG
 
             // --- Mode-entry completion (enterSetupMode) ---
             // Wait for the trailing PROMPT specifically, not just the banner: the banner

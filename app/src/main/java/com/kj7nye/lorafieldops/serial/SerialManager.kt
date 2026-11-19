@@ -56,10 +56,6 @@ class SerialManager(private val context: Context) : DeviceTransport {
     fun findDevices(): List<UsbSerialDriver> =
         UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
 
-    /** Returns true if the app already holds permission for [device]. */
-    fun hasPermission(device: UsbDevice): Boolean =
-        usbManager.hasPermission(device)
-
     /**
      * Requests USB permission for [device] and calls [onResult] with granted=true/false.
      * Safe to call when permission is already held — onResult fires synchronously with true.
