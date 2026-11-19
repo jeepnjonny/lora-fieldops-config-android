@@ -629,7 +629,7 @@ private fun LabeledTextField(label: String, value: String, onValueChange: (Strin
  * the value directly instead of having to delete it first. Returns null to ignore
  * the edit (e.g. a multi-character paste).
  */
-private fun singleCharEdit(current: String, input: String): String? = when {
+internal fun singleCharEdit(current: String, input: String): String? = when {
     input.length <= 1 -> input
     input.length == 2 && current.length == 1 ->
         if (input[0].toString() == current) input.substring(1) else input.substring(0, 1)

@@ -185,7 +185,7 @@ private fun yesNo(flag: String?): String = when (flag) {
  * "T2USASW (rotate.aprs.net:14580)": the pool member the login landed on, then the
  * host:port the tracker dialed. Falls back to whichever part the firmware reported.
  */
-private fun aprsIsServerText(status: Map<String, String>): String? {
+internal fun aprsIsServerText(status: Map<String, String>): String? {
     val host = status["aprsIS.host"]
     val port = status["aprsIS.port"]
     val server = status["aprsIS.server"]
@@ -201,7 +201,7 @@ private fun aprsIsServerText(status: Map<String, String>): String? {
  * server keeps it open receive-only — so "Connected: Yes" alone can't show it.
  * Null (no line) when the firmware doesn't report it.
  */
-private fun aprsIsLoginText(login: String?): String? = when (login) {
+internal fun aprsIsLoginText(login: String?): String? = when (login) {
     "verified"   -> "Verified (uploads accepted)"
     "unverified" -> "Passcode rejected (receive-only)"
     "pending"    -> "Logging in…"
