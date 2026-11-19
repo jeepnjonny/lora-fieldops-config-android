@@ -40,6 +40,7 @@ import com.kj7nye.lorafieldops.serial.BleTransport
 import com.kj7nye.lorafieldops.serial.CommandResult
 import com.kj7nye.lorafieldops.serial.ConnectionEvent
 import com.kj7nye.lorafieldops.serial.DeviceTransport
+import com.kj7nye.lorafieldops.serial.LineAssembler
 import com.kj7nye.lorafieldops.serial.ProtocolHandler
 import com.kj7nye.lorafieldops.serial.SerialManager
 import com.kj7nye.lorafieldops.serial.TransportKind
@@ -244,29 +245,19 @@ class ConfigViewModel(app: Application) : AndroidViewModel(app) {
         // rxReader receive every byte since SharedFlow supports multiple subscribers.
         logCollectorJob?.cancel()
         logCollectorJob = viewModelScope.launch {
-            val lineBuf = StringBuilder()
+            val lines = LineAssembler()
             link.rxFlow.collect { bytes ->
-                lineBuf.append(bytes.toString(Charsets.UTF_8))
-                val raw = lineBuf.toString()
-                val lastNl = raw.lastIndexOf('\n')
-                if (lastNl >= 0) {
-                    val complete = raw.substring(0, lastNl + 1)
-                    lineBuf.clear()
-                    lineBuf.append(raw.substring(lastNl + 1))
-                    val newLines = complete.lines()
-                        .map { it.trimEnd('\r') }
-                        .filter { it.isNotEmpty() }
-                    if (newLines.isNotEmpty()) {
-                        newLines.forEach { line ->
-                            if (logBuffer.size >= 1000) logBuffer.removeFirst()
-                            // Device log output carries no timestamp of its own, so stamp
-                            // each line with local receipt time. This is a live tail with
-                            // no backlog replay, so receipt time is accurate to within
-                            // serial transmission latency.
-                            logBuffer.addLast("[${logTimeFormatter.format(LocalTime.now())}] $line")
-                        }
-                        _logLines.value = logBuffer.toList()
+                val newLines = lines.feed(bytes)
+                if (newLines.isNotEmpty()) {
+                    newLines.forEach { line ->
+                        if (logBuffer.size >= 1000) logBuffer.removeFirst()
+                        // Device log output carries no timestamp of its own, so stamp
+                        // each line with local receipt time. This is a live tail with
+                        // no backlog replay, so receipt time is accurate to within
+                        // serial transmission latency.
+                        logBuffer.addLast("[${logTimeFormatter.format(LocalTime.now())}] $line")
                     }
+                    _logLines.value = logBuffer.toList()
                 }
             }
         }

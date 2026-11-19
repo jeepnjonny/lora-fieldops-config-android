@@ -15,9 +15,9 @@ import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.isActive
@@ -35,9 +35,10 @@ class SerialManager(private val context: Context) : DeviceTransport {
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-    private var port: UsbSerialPort? = null
+    @Volatile private var port: UsbSerialPort? = null
     private var readScope: CoroutineScope? = null
-    private var readJob: Job? = null
+    /** The one outstanding permission receiver, if a request is in progress. */
+    private var permissionReceiver: BroadcastReceiver? = null
 
     override val kind = TransportKind.USB
 
@@ -73,14 +74,17 @@ class SerialManager(private val context: Context) : DeviceTransport {
         }
         val pi = PendingIntent.getBroadcast(context, 0, intent, flags)
 
+        // Only the latest request's callback should fire.
+        unregisterPermissionReceiver()
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
                 if (ACTION_USB_PERMISSION != intent.action) return
-                context.unregisterReceiver(this)
+                if (permissionReceiver === this) unregisterPermissionReceiver()
                 val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                 onResult(granted)
             }
         }
+        permissionReceiver = receiver
         // ContextCompat handles the RECEIVER_NOT_EXPORTED flag API level check internally;
         // accessing Context.RECEIVER_NOT_EXPORTED directly crashes on API < 33 in Kotlin
         // because the Kotlin compiler does not inline Java static final int fields.
@@ -131,24 +135,35 @@ class SerialManager(private val context: Context) : DeviceTransport {
                 p.rts = false
             }
         } catch (e: Exception) {
+            // p.close() also closes the connection once p.open succeeded; close it
+            // directly too in case open itself threw.
+            try { p.close() } catch (_: Exception) {}
+            try { connection.close() } catch (_: Exception) {}
             emitEvent(ConnectionEvent.Error("Port open failed: ${e.message}"))
             return
         }
         port = p
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         readScope = scope
-        readJob = scope.launch { readLoop() }
+        scope.launch { readLoop(p) }
         emitEvent(ConnectionEvent.Opened(driver.device.productName ?: "USB device"))
     }
 
     /** Closes the port and stops the read loop. */
     override fun close() {
-        readJob?.cancel()
         readScope?.cancel()
-        readJob = null
         readScope = null
-        try { port?.close() } catch (_: Exception) {}
+        // Clear the field first so the read loop knows the close was ours.
+        val p = port
         port = null
+        try { p?.close() } catch (_: Exception) {}
+        unregisterPermissionReceiver()
+    }
+
+    private fun unregisterPermissionReceiver() {
+        val r = permissionReceiver ?: return
+        permissionReceiver = null
+        try { context.unregisterReceiver(r) } catch (_: IllegalArgumentException) {}
     }
 
     /** Returns true if the port is currently open. */
@@ -164,16 +179,21 @@ class SerialManager(private val context: Context) : DeviceTransport {
     // Private
     // ---------------------------------------------------------------------------
 
-    private fun readLoop() {
+    /** Reads [p] until it fails or is closed. Runs only for the port it was started with. */
+    private suspend fun readLoop(p: UsbSerialPort) {
         val buf = ByteArray(READ_BUFFER_SIZE)
-        while (readScope?.isActive == true) {
+        while (currentCoroutineContext().isActive && port === p) {
             try {
-                val n = port?.read(buf, READ_TIMEOUT_MS) ?: break
+                val n = p.read(buf, READ_TIMEOUT_MS)
                 if (n > 0) {
                     _rxFlow.tryEmit(buf.copyOf(n))
                 }
             } catch (e: Exception) {
-                emitEvent(ConnectionEvent.Lost(e.message ?: "IO error"))
+                // A read failing because we closed (or replaced) the port isn't a lost link;
+                // reporting it would end the next session the moment it opens.
+                if (currentCoroutineContext().isActive && port === p) {
+                    emitEvent(ConnectionEvent.Lost(e.message ?: "IO error"))
+                }
                 break
             }
         }

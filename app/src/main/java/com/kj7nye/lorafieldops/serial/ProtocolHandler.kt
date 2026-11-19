@@ -1,5 +1,6 @@
 package com.kj7nye.lorafieldops.serial
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -7,6 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
@@ -24,7 +26,9 @@ private const val IMPORT_READY    = "device reboots on success."
 private const val EXPORT_BEGIN    = "---- BEGIN tracker_conf.json ----"
 private const val EXPORT_END      = "---- END tracker_conf.json ----"
 
-private const val CMD_TIMEOUT_MS          = 10_000L
+private const val CLOSED          = "connection closed"
+
+private const val CMD_TIMEOUT_MS         = 10_000L
 private const val SETUP_ENTRY_TIMEOUT_MS  = 15_000L
 private const val ENTRY_DELAY1_MS         = 150L
 private const val ENTRY_DELAY2_MS         = 400L
@@ -67,12 +71,14 @@ class ProtocolHandler(
 
     // Only ever accessed inside rxReader — no @Volatile needed.
     private val accum = StringBuilder(8192)
+    private val decoder = Utf8StreamDecoder()
 
     // Set by the caller before writing bytes; completed by rxReader.
     // @Volatile so the write in the caller thread is visible to rxReader.
     @Volatile private var pending:       PendingCommand? = null
     @Volatile private var entryDeferred: CompletableDeferred<CommandResult>? = null
     @Volatile private var importDeferred: CompletableDeferred<CommandResult>? = null
+    @Volatile private var closed = false
 
     init {
         scope.launch { rxReader(rxFlow) }
@@ -134,9 +140,20 @@ class ProtocolHandler(
         timeoutMs: Long = CMD_TIMEOUT_MS,
         completeOn: String? = null,
     ): CommandResult {
+        if (closed) return CommandResult.Err(CLOSED)
         val cmd = PendingCommand(cmdText, timeoutMs * timeoutScale, completeOn)
-        cmdQueue.send(cmd)
-        return cmd.await()
+        try {
+            cmdQueue.send(cmd)
+        } catch (e: ClosedSendChannelException) {
+            return CommandResult.Err(CLOSED)
+        }
+        return try {
+            cmd.await()
+        } catch (e: CancellationException) {
+            // Caller gave up: don't send it later if it's still queued.
+            cmd.cancelled = true
+            throw e
+        }
     }
 
     /**
@@ -187,7 +204,21 @@ class ProtocolHandler(
         }
     }
 
-    fun close() { scope.cancel() }
+    /**
+     * Stops the handler. Every caller still waiting (queued or in-flight command, setup
+     * entry, import) gets [CommandResult.Err] right away instead of hanging.
+     */
+    fun close() {
+        closed = true
+        cmdQueue.close()
+        scope.cancel()
+        val err = CommandResult.Err(CLOSED)
+        pending?.complete(err)
+        pending = null
+        entryDeferred?.complete(err)
+        importDeferred?.complete(err)
+        while (true) cmdQueue.tryReceive().getOrNull()?.complete(err) ?: break
+    }
 
     // -------------------------------------------------------------------------
     // rxReader — sole owner of `accum`; runs on Dispatchers.IO
@@ -204,7 +235,7 @@ class ProtocolHandler(
                 accum.clear()
             }
 
-            accum.append(bytes.toString(Charsets.UTF_8))
+            accum.append(decoder.decode(bytes))
 
             // Mode banner detection
             if (accum.contains("SETUP MODE ACTIVE")) mode = SerialMode.SETUP
@@ -271,6 +302,7 @@ class ProtocolHandler(
 
     private suspend fun cmdDispatcher() {
         for (cmd in cmdQueue) {
+            if (cmd.cancelled) continue
             pending = cmd
             try {
                 transport.write("${cmd.commandText}\r\n".toByteArray())
@@ -310,6 +342,8 @@ private class PendingCommand(
 ) {
     /** Set by rxReader on the first bytes received after this command was dispatched. */
     @Volatile var started = false
+    /** The caller stopped waiting before this was sent; the dispatcher skips it. */
+    @Volatile var cancelled = false
     private val deferred = CompletableDeferred<CommandResult>()
     fun complete(result: CommandResult) { deferred.complete(result) }
     suspend fun await(): CommandResult  = deferred.await()
