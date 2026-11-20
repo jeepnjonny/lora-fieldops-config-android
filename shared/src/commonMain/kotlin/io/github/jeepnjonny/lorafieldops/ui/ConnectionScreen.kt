@@ -32,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import io.github.jeepnjonny.lorafieldops.platform.AppPermission
 import io.github.jeepnjonny.lorafieldops.platform.UsbDeviceInfo
 import io.github.jeepnjonny.lorafieldops.platform.rememberPermissionRequest
+import kotlinx.coroutines.delay
 
 @Composable
 fun ConnectionScreen(
@@ -176,6 +178,9 @@ private fun UsbSection(
 // Bluetooth
 // -----------------------------------------------------------------------------
 
+/** How often the Bluetooth scan list may re-sort itself by signal strength. */
+private const val RESORT_INTERVAL_MS = 5_000L
+
 @Composable
 private fun BluetoothSection(vm: ConfigViewModel) {
     val trackers by vm.bleScanner.results.collectAsStateWithLifecycle()
@@ -224,9 +229,24 @@ private fun BluetoothSection(vm: ConfigViewModel) {
         Spacer(Modifier.height(8.dp))
     }
 
-    if (trackers.isNotEmpty()) {
+    // The scanner re-sorts by RSSI on every advertisement, so trackers with similar signal
+    // swap places faster than you can tap one. Hold the on-screen order and only re-sort
+    // every RESORT_INTERVAL_MS; RSSI values still update live, and newly found trackers
+    // are added at the bottom until the next re-sort.
+    val latestTrackers by rememberUpdatedState(trackers)
+    var order by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(scanning) {
+        while (scanning) {
+            order = latestTrackers.sortedByDescending { it.rssi }.map { it.id }
+            delay(RESORT_INTERVAL_MS)
+        }
+    }
+    val byId = trackers.associateBy { it.id }
+    val shown = order.mapNotNull { byId[it] } + trackers.filter { it.id !in order }
+
+    if (shown.isNotEmpty()) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            trackers.forEach { tracker ->
+            shown.forEach { tracker ->
                 DeviceCard(
                     title = tracker.name,
                     subtitle = "${tracker.id}  ${tracker.rssi} dBm",
