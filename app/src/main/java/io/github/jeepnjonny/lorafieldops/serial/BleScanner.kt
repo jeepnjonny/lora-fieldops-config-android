@@ -44,7 +44,13 @@ class BleScanner(context: Context) : io.github.jeepnjonny.lorafieldops.platform.
 
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            // The ESP32 trackers' name doesn't fit next to the 128-bit service UUID, so it
+            // comes only in the scan response; results carrying just the advertisement have
+            // no name. Keep the last real name seen rather than falling back to the address.
+            val previous = _results.value.firstOrNull { it.id == result.device.address }?.name
+                ?.takeIf { it != result.device.address }
             val name = result.scanRecord?.deviceName
+                ?: previous
                 ?: runCatching { result.device.name }.getOrNull()
                 ?: result.device.address
             val entry = BleTrackerInfo(id = result.device.address, name = name, rssi = result.rssi, handle = result.device)
