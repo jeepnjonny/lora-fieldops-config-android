@@ -1,5 +1,7 @@
 package io.github.jeepnjonny.lorafieldops.platform
 
+import androidx.compose.runtime.Composable
+import io.github.jeepnjonny.lorafieldops.firmware.OtaLink
 import io.github.jeepnjonny.lorafieldops.logger.CoverageLogger
 import io.github.jeepnjonny.lorafieldops.serial.DeviceTransport
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,6 +23,8 @@ interface AppPlatform {
     val coverageLogger: CoverageLogger
     /** Hands [text] to the system share sheet. */
     fun shareText(text: String, subject: String)
+    /** Firmware updates over Bluetooth, or null where the app doesn't offer them yet. */
+    val firmware: FirmwarePlatform? get() = null
 }
 
 /** A tracker seen in a Bluetooth scan. [id] is stable on this phone; [handle] is the platform's device object. */
@@ -47,6 +51,43 @@ interface BleLink : DeviceTransport {
     fun open()
     /** Turns the KISS notifications on or off. Throws when the tracker has no KISS service. */
     suspend fun setKissNotifications(enabled: Boolean)
+
+    /** Firmware update services the tracker offered when the link opened. */
+    val updateServices: TrackerUpdateServices get() = TrackerUpdateServices()
+    /** The ESP32 update service on this link, when [TrackerUpdateServices.esp32Ota] is set. */
+    val otaLink: OtaLink? get() = null
+    /**
+     * T114: asks the running firmware to reboot into its DFU bootloader through the
+     * buttonless DFU service (`01 04` on the control point). The link drops right after.
+     */
+    suspend fun requestNordicDfuJump() {
+        throw UnsupportedOperationException("Nordic DFU isn't available on this platform")
+    }
+}
+
+/** Update services found by service discovery: support is detected this way, never by version number. */
+data class TrackerUpdateServices(val esp32Ota: Boolean = false, val nordicDfu: Boolean = false)
+
+/** A file the user picked; [name] is its display name. */
+class PickedFile(val name: String, val bytes: ByteArray)
+
+/** The platform half of firmware updates. */
+interface FirmwarePlatform {
+    /** HTTP GET, following redirects. Throws with a user-facing message on failure. */
+    suspend fun httpGet(url: String, onProgress: (received: Long, total: Long?) -> Unit = { _, _ -> }): ByteArray
+
+    /**
+     * T114 after the jump to the bootloader: reconnects to [tracker]'s address,
+     * drops the stale service cache, checks that the bootloader is there, then runs
+     * the Nordic DFU upload of [zip]. Throws with a user-facing message on failure.
+     */
+    suspend fun runNordicDfu(tracker: BleTrackerInfo, zip: ByteArray, onProgress: (percent: Int, kbPerSecond: Float) -> Unit)
+
+    /** Keeps the display on while composed. */
+    @Composable fun KeepScreenOn()
+
+    /** Returns a launcher for the system file picker; [onPicked] gets null when cancelled or unreadable. */
+    @Composable fun rememberFilePicker(onPicked: (PickedFile?) -> Unit): () -> Unit
 }
 
 /** A USB serial device found on the phone's USB port. */

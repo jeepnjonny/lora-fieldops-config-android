@@ -16,7 +16,9 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import java.io.IOException
+import io.github.jeepnjonny.lorafieldops.firmware.OtaLink
 import io.github.jeepnjonny.lorafieldops.platform.BleLink
+import io.github.jeepnjonny.lorafieldops.platform.TrackerUpdateServices
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -47,6 +49,16 @@ private val CONFIG_RX_CHAR: UUID = UUID.fromString(CONFIG_RX_CHAR_UUID)  // phon
 private val CONFIG_TX_CHAR: UUID = UUID.fromString(CONFIG_TX_CHAR_UUID)  // tracker notifies
 private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
+/** ESP32 firmware update service (ble_ota.h). */
+private val OTA_SERVICE: UUID = UUID.fromString(OTA_SERVICE_UUID)
+private val OTA_CONTROL_CHAR: UUID = UUID.fromString(OTA_CONTROL_CHAR_UUID)
+private val OTA_DATA_CHAR: UUID = UUID.fromString(OTA_DATA_CHAR_UUID)
+/** Nordic legacy DFU (T114): buttonless entry into the bootloader. */
+private val DFU_SERVICE: UUID = UUID.fromString(NORDIC_DFU_SERVICE_UUID)
+private val DFU_CONTROL_CHAR: UUID = UUID.fromString(NORDIC_DFU_CONTROL_CHAR_UUID)
+/** DFU control point: start DFU, image type "application". */
+private val DFU_START_APPLICATION = byteArrayOf(0x01, 0x04)
+
 private const val REQUESTED_MTU          = 247
 private const val DEFAULT_ATT_MTU        = 23
 private const val CONNECT_TIMEOUT_MS     = 15_000L
@@ -56,8 +68,9 @@ private const val BOND_POLL_INTERVAL_MS  = 500L
 private const val GATT_OP_TIMEOUT_MS     = 10_000L
 /** Lets the tracker's main loop register the subscription before the first CLI bytes arrive. */
 private const val LINK_SETTLE_MS         = 300L
-/** Gives the Bluetooth stack time to drop its service cache before rediscovery. */
-private const val GATT_REFRESH_SETTLE_MS = 500L
+/** Write-without-response queue full: wait this long before trying the packet again. */
+private const val WRITE_BUSY_RETRY_MS    = 5L
+private const val WRITE_BUSY_RETRIES     = 400
 
 // ATT errors that mean "this link isn't paired the way the tracker requires".
 private const val GATT_INSUFFICIENT_AUTHENTICATION = 0x05
@@ -112,12 +125,18 @@ class BleTransport(
     private val _kissFlow = MutableSharedFlow<ByteArray>(extraBufferCapacity = 512)
     override val kissFlow: SharedFlow<ByteArray> = _kissFlow
 
+    // Control-characteristic notifications of the ESP32 update service.
+    private val _otaFlow = MutableSharedFlow<ByteArray>(extraBufferCapacity = 256)
+
     private val scope     = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val gattMutex = Mutex()
 
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var configRxChar: BluetoothGattCharacteristic? = null
     @Volatile private var kissTxChar: BluetoothGattCharacteristic? = null
+    @Volatile private var otaControlChar: BluetoothGattCharacteristic? = null
+    @Volatile private var otaDataChar: BluetoothGattCharacteristic? = null
+    @Volatile private var dfuControlChar: BluetoothGattCharacteristic? = null
     @Volatile private var attMtu = DEFAULT_ATT_MTU
     @Volatile private var opened = false
     @Volatile private var closed = false
@@ -211,6 +230,13 @@ class BleTransport(
             ?: throw IOException(MSG_NO_CONFIG_SERVICE)
         // Optional: only the coverage logger uses it, and only when switched on.
         kissTxChar = gatt?.getService(KISS_SERVICE)?.getCharacteristic(KISS_TX_CHAR)
+        // Firmware update support is detected by service presence (after the cache
+        // refresh in discoverConfigService), never by version number.
+        gatt?.getService(OTA_SERVICE)?.let { ota ->
+            otaControlChar = ota.getCharacteristic(OTA_CONTROL_CHAR)
+            otaDataChar = ota.getCharacteristic(OTA_DATA_CHAR)
+        }
+        dfuControlChar = gatt?.getService(DFU_SERVICE)?.getCharacteristic(DFU_CONTROL_CHAR)
 
         ensureBonded()
 
@@ -289,7 +315,7 @@ class BleTransport(
      * cache before discovering so the result reflects the tracker as it is now.
      */
     private suspend fun discoverConfigService(): android.bluetooth.BluetoothGattService {
-        if (refreshGattCache()) delay(GATT_REFRESH_SETTLE_MS)
+        if (gatt?.refreshServiceCache() == true) delay(GATT_REFRESH_SETTLE_MS)
         val status = gattOperation("service discovery") { g -> g.discoverServices() }
         if (status != BluetoothGatt.GATT_SUCCESS) throw IOException("Bluetooth service discovery failed (status $status)")
         return gatt?.getService(CONFIG_SERVICE) ?: throw IOException(MSG_NO_CONFIG_SERVICE)
@@ -329,8 +355,91 @@ class BleTransport(
     }
 
     // -------------------------------------------------------------------------
+    // Firmware updates
+    // -------------------------------------------------------------------------
+
+    override val updateServices: TrackerUpdateServices
+        get() = TrackerUpdateServices(
+            esp32Ota = otaControlChar != null && otaDataChar != null,
+            nordicDfu = dfuControlChar != null,
+        )
+
+    override val otaLink: OtaLink?
+        get() = if (updateServices.esp32Ota) esp32Ota else null
+
+    private val esp32Ota = object : OtaLink {
+        override val otaNotifications: SharedFlow<ByteArray> = _otaFlow
+
+        override suspend fun enableOtaNotifications() =
+            subscribe(otaControlChar ?: throw IOException("No update service"), "update service")
+
+        override suspend fun writeOtaControl(bytes: ByteArray) {
+            val c = otaControlChar ?: throw IOException("No update service")
+            // START exceeds MTU − 3 only on a 23-byte MTU; Android then sends it as a long write.
+            val status = gattOperation("update command") { g -> writeCharacteristic(g, c, bytes) }
+            if (status != BluetoothGatt.GATT_SUCCESS) throw IOException("Bluetooth write failed (status $status)")
+        }
+
+        override suspend fun writeOtaData(bytes: ByteArray) {
+            val c = otaDataChar ?: throw IOException("No update service")
+            // Each packet waits for onCharacteristicWrite (the stack has taken it), so the
+            // phone's own queue is never overrun. A full queue refuses the write
+            // (Android 13+: ERROR_GATT_WRITE_REQUEST_BUSY): wait a moment and retry.
+            repeat(WRITE_BUSY_RETRIES) {
+                if (linkDead.isCompleted) throw IOException(linkDropMessage())
+                try {
+                    gattOperation("data write") { g ->
+                        writeCharacteristic(g, c, bytes, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                    }
+                    return
+                } catch (_: GattBusyException) {
+                    delay(WRITE_BUSY_RETRY_MS)
+                }
+            }
+            throw IOException("Bluetooth stayed busy; the transfer stalled")
+        }
+
+        override val maxWritePayload: Int get() = (attMtu - 3).coerceAtLeast(20)
+
+        override fun setHighThroughput(fast: Boolean) {
+            runCatching {
+                gatt?.requestConnectionPriority(
+                    if (fast) BluetoothGatt.CONNECTION_PRIORITY_HIGH else BluetoothGatt.CONNECTION_PRIORITY_BALANCED,
+                )
+            }
+        }
+    }
+
+    override suspend fun requestNordicDfuJump() {
+        val c = dfuControlChar ?: throw IOException("This tracker has no DFU service")
+        subscribe(c, "DFU control point")
+        // The tracker reboots into its bootloader as soon as it takes this, so the write
+        // response often never arrives; the caller treats a drop here as expected.
+        gattOperation("DFU start") { g -> writeCharacteristic(g, c, DFU_START_APPLICATION) }
+    }
+
+    /** Enables notifications on [char] (bonded link; same error mapping as the config link). */
+    private suspend fun subscribe(char: BluetoothGattCharacteristic, what: String) {
+        val g = gatt ?: throw IOException("Bluetooth link not open")
+        if (!g.setCharacteristicNotification(char, true)) throw IOException("Couldn't enable $what notifications")
+        val cccd = char.getDescriptor(CCCD_UUID) ?: throw IOException("The $what can't notify")
+        val status = gattOperation("$what subscribe") { gg ->
+            writeDescriptor(gg, cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+        }
+        when (status) {
+            BluetoothGatt.GATT_SUCCESS -> Unit
+            GATT_INSUFFICIENT_AUTHENTICATION, GATT_INSUFFICIENT_ENCRYPTION -> throw IOException(MSG_STALE_PAIRING)
+            GATT_INVALID_HANDLE -> throw IOException(MSG_STALE_SERVICE_CACHE)
+            else -> throw IOException("Bluetooth subscribe failed (status $status)")
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // GATT plumbing
     // -------------------------------------------------------------------------
+
+    /** Android refused to queue the operation (its queue is busy), as opposed to the link failing. */
+    private class GattBusyException(message: String) : IOException(message)
 
     /**
      * Runs one GATT operation and returns the status from its callback.
@@ -342,7 +451,7 @@ class BleTransport(
             val done = CompletableDeferred<Int>()
             pendingOperation = done
             try {
-                if (!start(g)) throw IOException("Bluetooth $name could not be started")
+                if (!start(g)) throw GattBusyException("Bluetooth $name could not be started")
                 withTimeout(GATT_OP_TIMEOUT_MS) { done.await() }
             } catch (e: TimeoutCancellationException) {
                 throw IOException("Bluetooth $name timed out")
@@ -351,13 +460,18 @@ class BleTransport(
             }
         }
 
-    private fun writeCharacteristic(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray): Boolean =
+    private fun writeCharacteristic(
+        g: BluetoothGatt,
+        c: BluetoothGattCharacteristic,
+        value: ByteArray,
+        writeType: Int = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+    ): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeCharacteristic(c, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
+            g.writeCharacteristic(c, value, writeType) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION")
             run {
-                c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                c.writeType = writeType
                 c.value = value
                 g.writeCharacteristic(c)
             }
@@ -374,14 +488,6 @@ class BleTransport(
             }
         }
 
-    /** BluetoothGatt.refresh() is hidden API; it is the only way to drop a stale service cache. */
-    private fun refreshGattCache(): Boolean = try {
-        val g = gatt
-        g != null && (g.javaClass.getMethod("refresh").invoke(g) as? Boolean ?: false)
-    } catch (_: Exception) {
-        false
-    }
-
     private fun progress(message: String) {
         _connectionEvents.tryEmit(ConnectionEvent.Progress(message))
     }
@@ -389,6 +495,9 @@ class BleTransport(
     private fun releaseGatt() {
         configRxChar = null
         kissTxChar = null
+        otaControlChar = null
+        otaDataChar = null
+        dfuControlChar = null
         gatt?.let { g ->
             runCatching { g.disconnect() }
             runCatching { g.close() }
@@ -455,6 +564,7 @@ class BleTransport(
             when (c.uuid) {
                 CONFIG_TX_CHAR -> _rxFlow.tryEmit(value.copyOf())
                 KISS_TX_CHAR   -> _kissFlow.tryEmit(value.copyOf())
+                OTA_CONTROL_CHAR -> _otaFlow.tryEmit(value.copyOf())
             }
         }
     }

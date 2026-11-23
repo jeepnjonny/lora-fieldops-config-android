@@ -24,7 +24,9 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.hoho.android.usbserial.driver.UsbSerialDriver
+import io.github.jeepnjonny.lorafieldops.firmware.AndroidFirmwarePlatform
 import io.github.jeepnjonny.lorafieldops.logger.CoverageLogger
+import io.github.jeepnjonny.lorafieldops.platform.FirmwarePlatform
 import io.github.jeepnjonny.lorafieldops.logger.HttpPoster
 import io.github.jeepnjonny.lorafieldops.logger.LogQueueDb
 import io.github.jeepnjonny.lorafieldops.logger.LogQueueStore
@@ -64,6 +66,7 @@ class AndroidPlatform private constructor(context: Context) : AppPlatform {
     override val usb: UsbSupport = usbSupport
     override val location: LocationSource = AndroidLocationSource(app)
     override val coverageLogger = CoverageLogger(AndroidLoggerPlatform(app))
+    override val firmware: FirmwarePlatform = AndroidFirmwarePlatform(app)
 
     override fun bleLink(tracker: BleTrackerInfo): BleLink =
         BleTransport(app, tracker.handle as BluetoothDevice, tracker.name)

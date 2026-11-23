@@ -128,9 +128,12 @@ fun StatusScreen(vm: ConfigViewModel) {
             icon = Icons.Default.Memory,
             title = "Firmware",
             loading = StatusGroup.VERSION in loading,
-            body = listOf("Version" to (statusLines["version"] ?: "—")),
             onRefresh = { vm.readFirmwareVersion() },
-        )
+        ) {
+            InfoRow("Version", statusLines["version"] ?: "—")
+            statusLines["board"]?.let { InfoRow("Board", it) }
+            FirmwareUpdateSection(vm)
+        }
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

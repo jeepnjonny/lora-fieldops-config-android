@@ -188,6 +188,8 @@ private fun MainNavigation(vm: ConfigViewModel) {
         }
     }
 
+    FirmwareUpdateDialog(vm)
+
     if (showImportExport) {
         ImportExportSheet(vm) { showImportExport = false }
     }

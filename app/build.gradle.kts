@@ -88,6 +88,7 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.usb.serial.android)
+    implementation(libs.nordic.dfu)
     implementation(libs.kotlinx.coroutines.android)
     // Coverage logger: offline queue, background upload, encrypted API key
     implementation(libs.androidx.room.runtime)

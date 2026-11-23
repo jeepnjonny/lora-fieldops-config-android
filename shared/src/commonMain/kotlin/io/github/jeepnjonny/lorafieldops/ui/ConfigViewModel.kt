@@ -12,6 +12,9 @@ import io.github.jeepnjonny.lorafieldops.model.DeviceRole
 import io.github.jeepnjonny.lorafieldops.model.DigiMode
 import io.github.jeepnjonny.lorafieldops.model.DisplayConfig
 import io.github.jeepnjonny.lorafieldops.model.FirmwareVersion
+import io.github.jeepnjonny.lorafieldops.firmware.FirmwareUpdateController
+import io.github.jeepnjonny.lorafieldops.firmware.TrackerVersionInfo
+import io.github.jeepnjonny.lorafieldops.firmware.UpdateSession
 import io.github.jeepnjonny.lorafieldops.model.FixedPositionConfig
 import io.github.jeepnjonny.lorafieldops.model.GpsSource
 import io.github.jeepnjonny.lorafieldops.model.KissConfig
@@ -44,6 +47,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
@@ -65,6 +69,8 @@ private const val BLE_TIMEOUT_SCALE = 3L
 /** Coverage logger auto-reconnect: first retry after this long, doubling up to the max. */
 private const val LOGGER_RECONNECT_FIRST_MS = 5_000L
 private const val LOGGER_RECONNECT_MAX_MS   = 60_000L
+/** Reconnect after a firmware update: covers connecting plus the setup handshake (45 s+). */
+private const val RECONNECT_VERSION_TIMEOUT_MS = 90_000L
 
 /** Firmware note printed on setup entry when a dropped session left unsaved edits in RAM. */
 private const val INTERRUPTED_SESSION_NOTE = "unsaved edits from an interrupted session"
@@ -133,6 +139,10 @@ class ConfigViewModel(val platform: AppPlatform) : ViewModel() {
     /** Link carrying the current session: the USB transport or a [BleLink]. */
     private var transport: DeviceTransport? = null
 
+    /** Firmware updates over Bluetooth; null where the platform doesn't offer them. */
+    val firmwareUpdater: FirmwareUpdateController? =
+        platform.firmware?.let { FirmwareUpdateController(viewModelScope, it, updateSession()) }
+
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
@@ -150,6 +160,11 @@ class ConfigViewModel(val platform: AppPlatform) : ViewModel() {
     // null as "can't confirm", not as "old" or "new".
     private val _firmwareVersion = MutableStateFlow<FirmwareVersion?>(null)
     val firmwareVersion: StateFlow<FirmwareVersion?> = _firmwareVersion.asStateFlow()
+
+    // PlatformIO env name from `version.board` (e.g. "heltec_v3_433_aprs"): picks the
+    // firmware image for Bluetooth updates. Null until read, or on firmware too old to report it.
+    private val _boardId = MutableStateFlow<String?>(null)
+    val boardId: StateFlow<String?> = _boardId.asStateFlow()
 
     private val _statusLines = MutableStateFlow<Map<String, String>>(emptyMap())
     val statusLines: StateFlow<Map<String, String>> = _statusLines.asStateFlow()
@@ -271,6 +286,7 @@ class ConfigViewModel(val platform: AppPlatform) : ViewModel() {
     private fun startSession(link: DeviceTransport, open: () -> Unit) {
         _connectionState.value = ConnectionState.Connecting()
         clearDeviceReadings()
+        if (firmwareUpdater?.isRunning != true) firmwareUpdater?.resetCheck()
         transport = link
 
         val proto = ProtocolHandler(
@@ -421,6 +437,60 @@ class ConfigViewModel(val platform: AppPlatform) : ViewModel() {
         clearDeviceReadings()
     }
 
+    /** The setup-session side of [FirmwareUpdateController]. */
+    private fun updateSession() = object : UpdateSession {
+        override fun currentBleLink(): BleLink? =
+            (transport as? BleLink)?.takeIf { it.isOpen && _connectionState.value is ConnectionState.Connected }
+
+        override fun currentBoard(): String? = _boardId.value
+
+        override fun currentVersion(): String? = _statusLines.value["version"]
+
+        override fun takeBleLinkForUpdate(): Pair<BleLink, BleTrackerInfo>? {
+            val link = currentBleLink() ?: return null
+            val tracker = lastBleTracker ?: return null
+            // Same teardown as disconnect(), except the link stays open for the updater.
+            // The event collector goes first, so the drop when the tracker reboots isn't
+            // reported as a lost connection.
+            cancelLoggerReconnect()
+            coverageLogger.detach()
+            connectionEventJob?.cancel()
+            connectionEventJob = null
+            setupJob?.cancel()
+            setupJob = null
+            logCollectorJob?.cancel()
+            logCollectorJob = null
+            fieldDebounceJobs.values.forEach { it.cancel() }
+            fieldDebounceJobs.clear()
+            pendingFieldCmds.clear()
+            protocol?.close()
+            protocol = null
+            transport = null
+            _connectionState.value = ConnectionState.Connecting("Updating firmware…")
+            return link to tracker
+        }
+
+        override suspend fun reconnect(tracker: BleTrackerInfo): TrackerVersionInfo? {
+            rememberTarget(LinkTarget.Ble(tracker))
+            openBle(tracker)
+            // The setup handshake reads `version` once the config has loaded; wait for that,
+            // or for the attempt to fail.
+            val ready = withTimeoutOrNull(RECONNECT_VERSION_TIMEOUT_MS) {
+                combine(_connectionState, _statusLines) { state, lines -> state to lines["version"] }
+                    .first { (state, version) ->
+                        version != null || state is ConnectionState.Error || state is ConnectionState.Disconnected
+                    }
+            } ?: return null
+            val version = ready.second ?: return null
+            return TrackerVersionInfo(version, _boardId.value)
+        }
+
+        override fun updateClosed() {
+            // Left behind by takeBleLinkForUpdate() when no reconnect followed (T114 failure).
+            if (transport == null && _connectionState.value is ConnectionState.Connecting) disconnect()
+        }
+    }
+
     /**
      * Forgets everything read from the previous tracker (status values, firmware
      * version, WiFi scan results) so nothing from one device is shown while talking
@@ -429,6 +499,7 @@ class ConfigViewModel(val platform: AppPlatform) : ViewModel() {
      */
     private fun clearDeviceReadings() {
         _firmwareVersion.value = null
+        _boardId.value = null
         _statusLines.value = emptyMap()
         _wifiScanResults.value = emptyList()
         _wifiScanning.value = false
@@ -668,9 +739,12 @@ class ConfigViewModel(val platform: AppPlatform) : ViewModel() {
     fun readFirmwareVersion() = readStatus(StatusGroup.VERSION) { proto ->
         val r = proto.sendCommand("version")
         if (r is CommandResult.Ok) {
-            val versionText = r.text.removePrefix("version.date=").trim()
-            _statusLines.update { it + ("version" to versionText) }
-            _firmwareVersion.value = FirmwareVersion.parse(versionText)
+            val info = TrackerVersionInfo.parse(r.text)
+            _statusLines.update { lines ->
+                lines + ("version" to info.version) + (info.board?.let { listOf("board" to it) } ?: emptyList())
+            }
+            _firmwareVersion.value = FirmwareVersion.parse(info.version)
+            _boardId.value = info.board
         }
     }
 
@@ -1020,7 +1094,7 @@ class ConfigViewModel(val platform: AppPlatform) : ViewModel() {
     fun clearSnack() { _snackMessage.value = null }
     fun clearFieldError() { _lastError.value = null }
 
-    private fun snack(msg: String) { _snackMessage.value = msg }
+    fun snack(msg: String) { _snackMessage.value = msg }
 
     /**
      * Shows the outcome of a one-shot command and returns true if it succeeded. A
