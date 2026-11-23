@@ -66,6 +66,11 @@
             android:name=".logger.LoggerService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <!-- Nordic DFU library: T114 firmware upload over Bluetooth -->
+        <service
+            android:name=".firmware.TrackerDfuService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 
 </manifest>

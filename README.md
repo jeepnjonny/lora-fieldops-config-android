@@ -1,7 +1,49 @@
-# LoRa FieldOps Config (Android)
+# LoRa FieldOps Config (Android and iPhone)
 
-Android app for configuring [LoRa FieldOps APRS trackers](https://github.com/KJ7NYE/LoRa_FieldOps_APRS_Tracker)
-over USB-OTG serial or Bluetooth LE.
+App for configuring [LoRa FieldOps APRS trackers](https://github.com/KJ7NYE/LoRa_FieldOps_APRS_Tracker)
+over USB-OTG serial or Bluetooth LE on Android, and over Bluetooth LE on iPhone.
+
+## iPhone
+
+The iPhone app is the same app, built from the same code. Differences:
+
+- **Bluetooth only.** iPhones can't talk to the tracker's USB serial chip, so there is no
+  USB section and no Log tab. Bluetooth setup needs the tracker's "Require PIN" option on,
+  as on Android. iOS asks for the PIN the first time you connect.
+- **Coverage logger** works while a tracker is connected, including with the screen off.
+  Queued entries that couldn't be sent are retried while the app is running, not after it
+  has been closed (iOS has no equivalent of Android's background upload).
+
+### Installing (no Apple Developer account)
+
+Each release has an unsigned `LoRaFieldOpsConfig-vX.Y.Z-unsigned.ipa` attached (builds from
+other branches are under the repo's Actions tab → iOS → the run → Artifacts). Install it with
+[SideStore](https://sidestore.io) or [AltStore](https://altstore.io), which sign it with your
+own free Apple ID:
+
+1. Set up SideStore (or AltStore) on the iPhone once. Their setup guides need a Mac or
+   Windows PC for this step.
+2. Download the `.ipa` to the iPhone, open SideStore → My Apps → **+**, and pick the file.
+3. On first launch, allow Bluetooth.
+
+A free Apple ID's signature lasts **7 days**. Refresh the app in SideStore before then
+(SideStore can do it on the phone; AltStore needs its computer on the same Wi-Fi). An app that
+expired stops opening until it is refreshed; its settings are kept. A free Apple ID can
+have 3 sideloaded apps at a time.
+
+### Building
+
+The app logic and screens live in `shared/` (Kotlin Multiplatform, Compose Multiplatform).
+`app/` is the Android app and `iosApp/` is the small iOS shell. The iOS app is built by the
+`iOS` GitHub workflow on a macOS runner. To build locally on a Mac with Xcode:
+
+```sh
+brew install xcodegen
+cd iosApp && xcodegen generate && open LoRaFieldOps.xcodeproj
+```
+
+Xcode runs Gradle to build the Kotlin framework. Most of `shared/`, including the iOS code,
+also type-checks on Linux: `./gradlew :shared:compileKotlinIosArm64`.
 
 ## Coverage logger
 

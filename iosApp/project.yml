@@ -1,0 +1,40 @@
+# XcodeGen spec for the iOS app shell. Generate the Xcode project with:
+#   brew install xcodegen && cd iosApp && xcodegen generate
+# The app itself is Kotlin (shared/); this target only hosts it. A pre-build step runs
+# Gradle to build the Shared framework for the SDK and configuration Xcode is building.
+name: LoRaFieldOps
+options:
+  bundleIdPrefix: io.github.jeepnjonny
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  LoRaFieldOps:
+    type: application
+    platform: iOS
+    scheme: {}
+    sources:
+      - path: iosApp
+    settings:
+      base:
+        PRODUCT_NAME: LoRaFieldOps
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.jeepnjonny.lorafieldops
+        INFOPLIST_FILE: iosApp/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
+        OTHER_LDFLAGS: ["$(inherited)", "-framework", "Shared"]
+        # The Gradle step reads and writes outside the sandbox Xcode gives build scripts.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        CODE_SIGN_STYLE: Automatic
+    preBuildScripts:
+      - name: Build Kotlin framework
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          cd "$SRCROOT/.."
+          ./gradlew :shared:embedAndSignAppleFrameworkForXcode

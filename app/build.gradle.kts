@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.kj7nye.lorafieldops"
+    namespace = "io.github.jeepnjonny.lorafieldops"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.kj7nye.lorafieldops"
+        applicationId = "io.github.jeepnjonny.lorafieldops"
         minSdk = 26
         targetSdk = 37
         // Overridden by the release workflow via -PreleaseVersionCode/-PreleaseVersionName,
@@ -74,6 +74,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(project(":shared"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -87,6 +88,7 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.usb.serial.android)
+    implementation(libs.nordic.dfu)
     implementation(libs.kotlinx.coroutines.android)
     // Coverage logger: offline queue, background upload, encrypted API key
     implementation(libs.androidx.room.runtime)

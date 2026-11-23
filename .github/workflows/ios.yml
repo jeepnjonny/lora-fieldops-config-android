@@ -1,0 +1,143 @@
+name: iOS
+
+# Builds an unsigned iOS app (.ipa) for sideloading with SideStore or AltStore, which
+# sign it with the installer's own Apple ID. No Apple Developer account or signing
+# secrets are involved. Also runs the shared tests on the iOS simulator.
+# Hardening notes as in release.yml: actions pinned to SHAs, the tag reaches scripts
+# only through env vars, and only the small upload job can write to the repo.
+on:
+  push:
+    paths:
+      - 'shared/**'
+      - 'iosApp/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'shared/**'
+      - 'iosApp/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          # Only master writes the cache; a release build reads nothing a PR could have written.
+          cache-read-only: ${{ github.ref != 'refs/heads/master' }}
+          cache-disabled: ${{ github.event_name == 'release' }}
+
+      - name: App version
+        run: |
+          if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "APP_VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+          elif [[ -n "$TAG" ]]; then
+            echo "::error::Release tag is not a plain vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          else
+            echo "APP_VERSION=0.0.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          fi
+          echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+          xcodebuild -version
+
+      - name: Shared tests on the iOS simulator
+        run: ./gradlew :shared:iosSimulatorArm64Test
+
+      - name: Generate the Xcode project
+        run: |
+          brew install xcodegen
+          cd iosApp && xcodegen generate
+
+      - name: Build the app (unsigned)
+        run: |
+          xcodebuild \
+            -project iosApp/LoRaFieldOps.xcodeproj \
+            -scheme LoRaFieldOps \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath iosApp/build \
+            MARKETING_VERSION="$APP_VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package the .ipa
+        run: |
+          app=iosApp/build/Build/Products/Release-iphoneos/LoRaFieldOps.app
+          test -d "$app"
+          # The APRS symbol sheets are Compose resources; a missing one crashes the Config screen.
+          for i in 0 1 2; do
+            find "$app" -name "aprs_symbols_$i.png" | grep -q . || { echo "::error::aprs_symbols_$i.png missing from the app"; exit 1; }
+          done
+          for key in CFBundleIdentifier CFBundleShortVersionString UIBackgroundModes NSBluetoothAlwaysUsageDescription; do
+            /usr/libexec/PlistBuddy -c "Print :$key" "$app/Info.plist"
+          done
+          rm -rf Payload && mkdir Payload && cp -R "$app" Payload/
+          name="LoRaFieldOpsConfig-${TAG:-$APP_VERSION}-unsigned.ipa"
+          zip -qry "$name" Payload
+          echo "IPA_NAME=$name" >> "$GITHUB_ENV"
+          ls -l "$name"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-ipa
+          path: ${{ env.IPA_NAME }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Test reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-test-reports
+          path: shared/build/reports/tests/
+          retention-days: 7
+
+  upload:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ios-ipa
+
+      - name: Upload the .ipa to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" LoRaFieldOpsConfig-*-unsigned.ipa --clobber --repo "$GITHUB_REPOSITORY"

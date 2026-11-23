@@ -8,7 +8,7 @@ Line numbers are as of commit `0296e98`.
 **Rejected:** B1, B2 (export redaction, import confirmation).
 **Not yet decided:** A14, C1–C14, D3–D9 (listed at the end).
 
-Paths below are relative to `app/src/main/java/com/kj7nye/lorafieldops/` unless they start
+Paths below are relative to `app/src/main/java/io/github/jeepnjonny/lorafieldops/` unless they start
 with `app/`, `.github/`, `gradle/` or `settings.gradle.kts`.
 
 ---
